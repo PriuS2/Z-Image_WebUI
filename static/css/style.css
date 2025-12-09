@@ -370,6 +370,17 @@ body {
     max-width: 1200px;
     margin: 0 auto;
     width: 100%;
+    position: relative;
+}
+
+/* 모델 컨트롤 영역 (스크롤과 상관없이 상단 고정) */
+.chat-sticky-header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--bg-primary);
+    padding-top: 4px;
+    padding-bottom: 4px;
 }
 
 .chat-messages {
@@ -694,6 +705,53 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* 히스토리 대화 저장 배지 */
+.history-item-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    padding: 4px 10px;
+    background: rgba(99, 102, 241, 0.1);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: 20px;
+    font-size: 11px;
+    color: var(--accent);
+}
+
+.history-item-badge i {
+    font-size: 12px;
+}
+
+/* 히스토리 한국어/영어 프롬프트 구분 표시 */
+.history-item-korean {
+    font-size: 14px;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.history-item-prompt {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.lang-badge {
+    flex-shrink: 0;
+    font-size: 12px;
+}
+
+.lang-badge.kr {
+    color: #4ade80;
+}
+
+.lang-badge.us {
+    color: #60a5fa;
 }
 
 .item-actions {

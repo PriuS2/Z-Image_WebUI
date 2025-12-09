@@ -6,6 +6,7 @@ let isGenerating = false;
 let isModelLoading = false;
 let templates = {};
 let isTranslating = false;
+let lastHistoryId = null;  // 마지막으로 저장된 히스토리 ID
 
 // ============= DOM 요소 =============
 const chatMessages = document.getElementById('chatMessages');
@@ -193,6 +194,7 @@ function addImageMessage(images, prompt) {
         imgEl.src = `data:image/png;base64,${img.base64}`;
         imgEl.alt = prompt;
         imgEl.title = `시드: ${img.seed}\n클릭하여 확대`;
+        imgEl.dataset.path = img.path;  // 이미지 경로 저장 (복원용)
         imgEl.onclick = () => showImageModal(img.path, img);
         imagesDiv.appendChild(imgEl);
     });
@@ -201,6 +203,99 @@ function addImageMessage(images, prompt) {
     messageDiv.appendChild(contentDiv);
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// ============= 대화 내용 관리 =============
+// 현재 대화 내용을 JSON 형태로 추출
+function getConversation() {
+    const messages = [];
+    const messageElements = chatMessages.querySelectorAll('.message');
+    
+    messageElements.forEach(msgEl => {
+        const type = msgEl.classList.contains('user') ? 'user' :
+                     msgEl.classList.contains('assistant') ? 'assistant' : 'system';
+        
+        const contentEl = msgEl.querySelector('.message-content');
+        if (!contentEl) return;
+        
+        // 텍스트 메시지
+        const textEl = contentEl.querySelector('p');
+        const text = textEl ? textEl.innerHTML : '';
+        
+        // 이미지 메시지
+        const imagesEl = contentEl.querySelector('.message-images');
+        let images = null;
+        if (imagesEl) {
+            images = [];
+            imagesEl.querySelectorAll('img').forEach(img => {
+                images.push({
+                    path: img.dataset.path || img.src,
+                    alt: img.alt
+                });
+            });
+        }
+        
+        messages.push({ type, text, images });
+    });
+    
+    return messages;
+}
+
+// 대화 내용 복원
+function restoreConversation(conversation) {
+    // 기존 대화 내용 삭제 (환영 메시지 제외)
+    const existingMessages = chatMessages.querySelectorAll('.message');
+    existingMessages.forEach(msg => msg.remove());
+    
+    // 대화 내용 복원
+    conversation.forEach(msg => {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${msg.type}`;
+        
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        
+        if (msg.text) {
+            const p = document.createElement('p');
+            p.innerHTML = msg.text;
+            contentDiv.appendChild(p);
+        }
+        
+        if (msg.images && msg.images.length > 0) {
+            const imagesDiv = document.createElement('div');
+            imagesDiv.className = 'message-images';
+            
+            msg.images.forEach(imgData => {
+                const imgEl = document.createElement('img');
+                // 경로 처리 - base64이면 그대로, 상대경로면 그대로
+                imgEl.src = imgData.path;
+                imgEl.alt = imgData.alt || '';
+                imgEl.dataset.path = imgData.path;
+                imgEl.onclick = () => showImageModal(imgData.path, { prompt: imgData.alt });
+                imagesDiv.appendChild(imgEl);
+            });
+            
+            contentDiv.appendChild(imagesDiv);
+        }
+        
+        messageDiv.appendChild(contentDiv);
+        chatMessages.appendChild(messageDiv);
+    });
+    
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// 히스토리에 대화 내용 저장
+async function saveConversationToHistory(historyId) {
+    if (!historyId) return;
+    
+    try {
+        const conversation = getConversation();
+        await apiCall(`/history/${historyId}/conversation`, 'PATCH', { conversation });
+        console.log('대화 내용이 히스토리에 저장되었습니다.');
+    } catch (error) {
+        console.error('대화 내용 저장 실패:', error);
+    }
 }
 
 // ============= API 호출 =============
@@ -273,6 +368,7 @@ async function generateImage(preview = false) {
     
     const requestBody = {
         prompt,
+        korean_prompt: koreanText,  // 한국어 프롬프트도 함께 전송
         width,
         height,
         steps: parseInt(document.getElementById('stepsInput').value) || 8,
@@ -287,6 +383,15 @@ async function generateImage(preview = false) {
         
         if (result.success && result.images) {
             addImageMessage(result.images, result.prompt);
+            
+            // 히스토리에 대화 내용 저장
+            if (result.history_id) {
+                lastHistoryId = result.history_id;
+                // 약간의 딜레이 후 대화 내용 저장 (이미지가 DOM에 추가된 후)
+                setTimeout(() => {
+                    saveConversationToHistory(result.history_id);
+                }, 500);
+            }
         }
     } catch (error) {
         addMessage('system', `❌ 오류: ${error.message}`, 'error');
@@ -790,16 +895,21 @@ async function loadHistory() {
         list.innerHTML = '';
         
         result.history.forEach(entry => {
+            const hasConversation = entry.conversation && entry.conversation.length > 0;
+            const hasKorean = entry.korean_prompt && entry.korean_prompt.trim();
             const item = document.createElement('div');
             item.className = 'history-item';
             item.innerHTML = `
                 <div class="history-item-header">
                     <span class="history-item-time">${formatDate(entry.timestamp)}</span>
                     <div class="item-actions">
-                        <button class="btn btn-secondary" onclick="useHistoryPrompt('${escapeHtml(entry.prompt)}')">사용</button>
+                        ${hasConversation ? `<button class="btn btn-primary" onclick="restoreHistoryConversation('${entry.id}')" title="대화 내용을 복원합니다"><i class="ri-chat-history-line"></i> 대화 복원</button>` : ''}
+                        <button class="btn btn-secondary" onclick="useHistoryEntry('${entry.id}')">사용</button>
                     </div>
                 </div>
-                <div class="history-item-prompt">${escapeHtml(entry.prompt)}</div>
+                ${hasKorean ? `<div class="history-item-korean"><span class="lang-badge kr">🇰🇷</span> ${escapeHtml(entry.korean_prompt)}</div>` : ''}
+                <div class="history-item-prompt"><span class="lang-badge us">🇺🇸</span> ${escapeHtml(entry.prompt)}</div>
+                ${hasConversation ? `<div class="history-item-badge"><i class="ri-chat-3-line"></i> 대화 ${entry.conversation.length}개 메시지</div>` : ''}
             `;
             list.appendChild(item);
         });
@@ -808,13 +918,103 @@ async function loadHistory() {
     }
 }
 
+// 히스토리 항목 사용 (한국어/영어 프롬프트 모두 복원)
+async function useHistoryEntry(historyId) {
+    try {
+        const result = await apiCall(`/history/${historyId}`);
+        const entry = result.history;
+        
+        // 영어 프롬프트 설정
+        promptInput.value = entry.prompt;
+        
+        // 한국어 프롬프트 복원
+        const koreanInputEl = document.getElementById('koreanInput');
+        if (koreanInputEl) {
+            koreanInputEl.value = entry.korean_prompt || '';
+        }
+        
+        switchTab('chat');
+        
+        if (entry.korean_prompt) {
+            addMessage('system', '✅ 프롬프트 적용됨 (🇰🇷 한국어 + 🇺🇸 영어)');
+        } else {
+            addMessage('system', '✅ 프롬프트 적용됨 (🇺🇸 영어)');
+        }
+    } catch (error) {
+        console.error('히스토리 사용 실패:', error);
+        addMessage('system', `❌ 히스토리 로드 실패: ${error.message}`, 'error');
+    }
+}
+
+// 레거시 호환 (이전 방식)
 function useHistoryPrompt(prompt) {
     promptInput.value = prompt;
-    // 한국어 입력창 비우기 (영어 프롬프트 직접 사용)
     const koreanInputEl = document.getElementById('koreanInput');
     if (koreanInputEl) koreanInputEl.value = '';
     switchTab('chat');
-    addMessage('system', '✅ 프롬프트 적용됨 (영어 프롬프트 직접 사용)');
+    addMessage('system', '✅ 프롬프트 적용됨');
+}
+
+// 히스토리에서 대화 내용 복원
+async function restoreHistoryConversation(historyId) {
+    try {
+        const result = await apiCall(`/history/${historyId}`);
+        const entry = result.history;
+        
+        if (entry.conversation && entry.conversation.length > 0) {
+            // 확인 대화상자
+            if (!confirm('현재 대화 내용을 지우고 히스토리의 대화를 복원하시겠습니까?')) {
+                return;
+            }
+            
+            // 프롬프트 설정 (영어)
+            promptInput.value = entry.prompt;
+            
+            // 한국어 프롬프트 복원
+            const koreanInputEl = document.getElementById('koreanInput');
+            if (koreanInputEl) {
+                koreanInputEl.value = entry.korean_prompt || '';
+            }
+            
+            // 설정 복원
+            if (entry.settings) {
+                if (entry.settings.width && entry.settings.height) {
+                    const resSelect = document.getElementById('resolutionSelect');
+                    const resValue = `${entry.settings.width}x${entry.settings.height}`;
+                    // 프리셋에 있으면 선택, 없으면 커스텀
+                    if ([...resSelect.options].some(opt => opt.value === resValue)) {
+                        resSelect.value = resValue;
+                        document.getElementById('customResolution').style.display = 'none';
+                    } else {
+                        resSelect.value = 'custom';
+                        document.getElementById('customResolution').style.display = 'flex';
+                        document.getElementById('customWidth').value = entry.settings.width;
+                        document.getElementById('customHeight').value = entry.settings.height;
+                    }
+                }
+                if (entry.settings.seed) {
+                    document.getElementById('seedInput').value = entry.settings.seed;
+                }
+                if (entry.settings.steps) {
+                    document.getElementById('stepsInput').value = entry.settings.steps;
+                }
+            }
+            
+            // 대화 내용 복원
+            restoreConversation(entry.conversation);
+            
+            // 탭 전환
+            switchTab('chat');
+            
+            addMessage('system', '✅ 히스토리에서 대화가 복원되었습니다.');
+        } else {
+            addMessage('system', '⚠️ 이 히스토리에는 저장된 대화 내용이 없습니다.');
+            switchTab('chat');
+        }
+    } catch (error) {
+        console.error('대화 복원 실패:', error);
+        addMessage('system', `❌ 대화 복원 실패: ${error.message}`, 'error');
+    }
 }
 
 async function clearHistory() {

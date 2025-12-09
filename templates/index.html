@@ -50,44 +50,46 @@
             <!-- 대화 탭 -->
             <section class="tab-content active" id="tab-chat">
                 <div class="chat-container">
-                    <!-- 모델 상태 바 -->
-                    <div class="model-control-bar" id="modelControlBar">
-                        <div class="model-info">
-                            <div class="model-status-badge" id="modelStatusBadge">
-                                <span class="status-dot offline"></span>
-                                <span class="status-text">모델 미로드</span>
+                    <!-- 모델 상태 바 (스크롤과 상관없이 상단 고정) -->
+                    <div class="chat-sticky-header">
+                        <div class="model-control-bar" id="modelControlBar">
+                            <div class="model-info">
+                                <div class="model-status-badge" id="modelStatusBadge">
+                                    <span class="status-dot offline"></span>
+                                    <span class="status-text">모델 미로드</span>
+                                </div>
+                                <div class="chat-model-select">
+                                    <select id="chatQuantizationSelect" title="양자화 옵션 선택">
+                                        <option value="BF16 (기본, 최고품질)">BF16 (기본)</option>
+                                    </select>
+                                </div>
+                                <label class="cpu-offload-label" title="VRAM이 부족할 때 체크하세요. RAM을 사용하여 VRAM 사용량을 줄입니다.">
+                                    <input type="checkbox" id="chatCpuOffloadCheck">
+                                    <span>CPU 오프로딩</span>
+                                    <span class="tooltip-icon" data-tooltip="VRAM이 부족할 때 사용하세요. 모델 일부를 RAM에 올려 VRAM 사용량을 줄입니다. 속도는 약간 느려질 수 있습니다.">?</span>
+                                </label>
                             </div>
-                            <div class="chat-model-select">
-                                <select id="chatQuantizationSelect" title="양자화 옵션 선택">
-                                    <option value="BF16 (기본, 최고품질)">BF16 (기본)</option>
-                                </select>
+                            <div class="model-actions">
+                                <button class="btn btn-sm btn-primary" id="btnChatLoadModel" title="모델 로드">
+                                    <i class="ri-download-line"></i> 로드
+                                </button>
+                                <button class="btn btn-sm btn-danger" id="btnChatUnloadModel" title="모델 언로드">
+                                    <i class="ri-close-line"></i> 언로드
+                                </button>
                             </div>
-                            <label class="cpu-offload-label" title="VRAM이 부족할 때 체크하세요. RAM을 사용하여 VRAM 사용량을 줄입니다.">
-                                <input type="checkbox" id="chatCpuOffloadCheck">
-                                <span>CPU 오프로딩</span>
-                                <span class="tooltip-icon" data-tooltip="VRAM이 부족할 때 사용하세요. 모델 일부를 RAM에 올려 VRAM 사용량을 줄입니다. 속도는 약간 느려질 수 있습니다.">?</span>
-                            </label>
                         </div>
-                        <div class="model-actions">
-                            <button class="btn btn-sm btn-primary" id="btnChatLoadModel" title="모델 로드">
-                                <i class="ri-download-line"></i> 로드
-                            </button>
-                            <button class="btn btn-sm btn-danger" id="btnChatUnloadModel" title="모델 언로드">
-                                <i class="ri-close-line"></i> 언로드
-                            </button>
+                        
+                        <!-- 프로그레스 바 -->
+                        <div class="progress-container" id="progressContainer" style="display: none;">
+                            <div class="progress-info">
+                                <span class="progress-label" id="progressLabel">모델 로딩 중...</span>
+                                <span class="progress-percent" id="progressPercent">0%</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-detail" id="progressDetail"></div>
                         </div>
-                    </div>
-                    
-                    <!-- 프로그레스 바 -->
-                    <div class="progress-container" id="progressContainer" style="display: none;">
-                        <div class="progress-info">
-                            <span class="progress-label" id="progressLabel">모델 로딩 중...</span>
-                            <span class="progress-percent" id="progressPercent">0%</span>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill" id="progressFill" style="width: 0%"></div>
-                        </div>
-                        <div class="progress-detail" id="progressDetail"></div>
                     </div>
                     
                     <div class="chat-messages" id="chatMessages">

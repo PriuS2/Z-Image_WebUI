@@ -17,12 +17,19 @@ class HistoryEntry:
     settings: Dict[str, Any]
     timestamp: str
     image_path: Optional[str] = None
+    conversation: Optional[List[Dict[str, Any]]] = None  # 대화 내용 저장
+    korean_prompt: Optional[str] = None  # 한국어 프롬프트 저장
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HistoryEntry":
+        # 기존 데이터 호환성 유지
+        if "conversation" not in data:
+            data["conversation"] = None
+        if "korean_prompt" not in data:
+            data["korean_prompt"] = None
         return cls(**data)
 
 
@@ -61,7 +68,9 @@ class HistoryManager:
         self,
         prompt: str,
         settings: Optional[Dict[str, Any]] = None,
-        image_path: Optional[str] = None
+        image_path: Optional[str] = None,
+        conversation: Optional[List[Dict[str, Any]]] = None,
+        korean_prompt: Optional[str] = None
     ) -> HistoryEntry:
         """히스토리 항목 추가"""
         entry = HistoryEntry(
@@ -69,7 +78,9 @@ class HistoryManager:
             prompt=prompt,
             settings=settings or {},
             timestamp=datetime.now().isoformat(),
-            image_path=image_path
+            image_path=image_path,
+            conversation=conversation,
+            korean_prompt=korean_prompt
         )
         
         # 중복 체크 (같은 프롬프트가 있으면 기존 것 제거)

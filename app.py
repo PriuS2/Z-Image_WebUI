@@ -62,6 +62,7 @@ is_generating = False
 # ============= Pydantic 모델 =============
 class GenerateRequest(BaseModel):
     prompt: str
+    korean_prompt: str = ""  # 한국어 프롬프트 (원본)
     width: int = 512
     height: int = 512
     steps: int = 8
@@ -474,8 +475,9 @@ async def generate_image(request: GenerateRequest):
             })
         
         # 히스토리 추가
-        history_manager.add(
+        history_entry = history_manager.add(
             prompt=request.prompt,
+            korean_prompt=request.korean_prompt,
             settings={
                 "width": request.width,
                 "height": request.height,
@@ -490,7 +492,7 @@ async def generate_image(request: GenerateRequest):
             "content": f"✅ {len(images)}장 생성 완료! (시드: {seed})"
         })
         
-        return {"success": True, "images": images, "seed": seed, "prompt": final_prompt}
+        return {"success": True, "images": images, "seed": seed, "prompt": final_prompt, "history_id": history_entry.id}
         
     except Exception as e:
         await manager.broadcast({"type": "error", "content": f"❌ 생성 오류: {str(e)}"})
@@ -599,6 +601,33 @@ async def get_history():
     """히스토리 목록"""
     entries = history_manager.get_all()
     return {"history": [e.to_dict() for e in entries[:50]]}
+
+
+@app.get("/api/history/{history_id}")
+async def get_history_detail(history_id: str):
+    """히스토리 상세 정보 (대화 내용 포함)"""
+    entry = history_manager.get_by_id(history_id)
+    if not entry:
+        raise HTTPException(404, "히스토리를 찾을 수 없습니다.")
+    return {"history": entry.to_dict()}
+
+
+class ConversationUpdateRequest(BaseModel):
+    conversation: List[Dict[str, Any]]
+
+
+@app.patch("/api/history/{history_id}/conversation")
+async def update_history_conversation(history_id: str, request: ConversationUpdateRequest):
+    """히스토리의 대화 내용 업데이트"""
+    entry = history_manager.get_by_id(history_id)
+    if not entry:
+        raise HTTPException(404, "히스토리를 찾을 수 없습니다.")
+    
+    # 대화 내용 업데이트
+    entry.conversation = request.conversation
+    history_manager._save()
+    
+    return {"success": True}
 
 
 @app.delete("/api/history")
