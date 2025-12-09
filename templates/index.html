@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Z-Image WebUI</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@4.0.0/fonts/remixicon.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 사이드바 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <i class="ri-image-ai-line"></i>
+                <span>Z-Image</span>
+            </div>
+            
+            <nav class="nav-menu">
+                <button class="nav-item active" data-tab="chat">
+                    <i class="ri-chat-3-line"></i>
+                    <span>대화</span>
+                </button>
+                <button class="nav-item" data-tab="gallery">
+                    <i class="ri-gallery-line"></i>
+                    <span>갤러리</span>
+                </button>
+                <button class="nav-item" data-tab="history">
+                    <i class="ri-history-line"></i>
+                    <span>히스토리</span>
+                </button>
+                <button class="nav-item" data-tab="favorites">
+                    <i class="ri-star-line"></i>
+                    <span>즐겨찾기</span>
+                </button>
+                <button class="nav-item" data-tab="settings">
+                    <i class="ri-settings-3-line"></i>
+                    <span>설정</span>
+                </button>
+            </nav>
+            
+            <div class="model-status" id="modelStatus">
+                <div class="status-indicator offline"></div>
+                <span>모델 미로드</span>
+            </div>
+        </aside>
+        
+        <!-- 메인 컨텐츠 -->
+        <main class="main-content">
+            <!-- 대화 탭 -->
+            <section class="tab-content active" id="tab-chat">
+                <div class="chat-container">
+                    <!-- 모델 상태 바 -->
+                    <div class="model-control-bar" id="modelControlBar">
+                        <div class="model-info">
+                            <div class="model-status-badge" id="modelStatusBadge">
+                                <span class="status-dot offline"></span>
+                                <span class="status-text">모델 미로드</span>
+                            </div>
+                            <div class="chat-model-select">
+                                <select id="chatQuantizationSelect" title="양자화 옵션 선택">
+                                    <option value="BF16 (기본, 최고품질)">BF16 (기본)</option>
+                                </select>
+                            </div>
+                            <label class="cpu-offload-label" title="VRAM이 부족할 때 체크하세요. RAM을 사용하여 VRAM 사용량을 줄입니다.">
+                                <input type="checkbox" id="chatCpuOffloadCheck">
+                                <span>CPU 오프로딩</span>
+                                <span class="tooltip-icon" data-tooltip="VRAM이 부족할 때 사용하세요. 모델 일부를 RAM에 올려 VRAM 사용량을 줄입니다. 속도는 약간 느려질 수 있습니다.">?</span>
+                            </label>
+                        </div>
+                        <div class="model-actions">
+                            <button class="btn btn-sm btn-primary" id="btnChatLoadModel" title="모델 로드">
+                                <i class="ri-download-line"></i> 로드
+                            </button>
+                            <button class="btn btn-sm btn-danger" id="btnChatUnloadModel" title="모델 언로드">
+                                <i class="ri-close-line"></i> 언로드
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 프로그레스 바 -->
+                    <div class="progress-container" id="progressContainer" style="display: none;">
+                        <div class="progress-info">
+                            <span class="progress-label" id="progressLabel">모델 로딩 중...</span>
+                            <span class="progress-percent" id="progressPercent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                        </div>
+                        <div class="progress-detail" id="progressDetail"></div>
+                    </div>
+                    
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="message system">
+                            <div class="message-content">
+                                <p>👋 안녕하세요! Z-Image WebUI입니다.</p>
+                                <p>이미지를 생성하려면 프롬프트를 입력하세요.</p>
+                                <p>위의 <strong>로드</strong> 버튼을 눌러 모델을 먼저 로드해주세요.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="chat-input-container">
+                        <div class="input-options">
+                            <button class="option-btn" id="btnTemplate" title="템플릿">
+                                <i class="ri-file-list-3-line"></i>
+                            </button>
+                            <button class="option-btn" id="btnTranslate" title="번역">
+                                <i class="ri-translate-2"></i>
+                            </button>
+                            <button class="option-btn" id="btnEnhance" title="AI 향상">
+                                <i class="ri-magic-line"></i>
+                            </button>
+                            <!-- 네거티브 프롬프트: Z-Image(Flux)는 지원하지 않음 -->
+                            <button class="option-btn" id="btnNegative" title="네거티브 프롬프트 (Flux 모델 미지원)">
+                                <i class="ri-prohibited-line"></i>
+                            </button>
+                            
+                            <!-- LLM 모델 선택 (번역/향상용) -->
+                            <div class="llm-quick-select">
+                                <i class="ri-robot-line"></i>
+                                <select id="chatLlmProviderSelect" title="번역/향상에 사용할 LLM Provider">
+                                    <option value="openai">OpenAI</option>
+                                </select>
+                                <select id="chatLlmModelSelect" title="사용할 모델">
+                                    <option value="">기본</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="input-row korean-input-row">
+                            <div class="input-label">
+                                <i class="ri-translate-2"></i>
+                                <span>한국어 입력</span>
+                                <button class="btn btn-xs btn-primary" id="btnTranslateKorean" title="한국어를 영어로 번역">
+                                    <i class="ri-translate-2"></i> 번역
+                                </button>
+                            </div>
+                            <textarea id="koreanInput" placeholder="여기에 한국어로 입력하세요..." rows="2"></textarea>
+                        </div>
+                        
+                        <div class="input-row english-prompt-row">
+                            <div class="input-label">
+                                <i class="ri-english-input"></i>
+                                <span>실제 프롬프트 (영어)</span>
+                                <span class="translate-status" id="translateStatus"></span>
+                            </div>
+                            <textarea id="promptInput" placeholder="English prompt will appear here... (직접 편집 가능)" rows="3"></textarea>
+                        </div>
+                        
+                        <div class="input-row negative-row" id="negativeRow" style="display: none;">
+                            <textarea id="negativeInput" placeholder="네거티브 프롬프트 (원하지 않는 요소)" rows="2"></textarea>
+                        </div>
+                        
+                        <div class="input-actions">
+                            <div class="quick-settings">
+                                <div class="setting-with-tooltip">
+                                    <select id="resolutionSelect" title="해상도: 이미지 크기 (클수록 고품질, VRAM 더 사용)">
+                                        <option value="512x512">512×512</option>
+                                        <option value="768x768">768×768</option>
+                                        <option value="1024x1024">1024×1024</option>
+                                        <option value="512x768">512×768 (세로)</option>
+                                        <option value="768x512">768×512 (가로)</option>
+                                        <option value="custom">📐 커스텀</option>
+                                    </select>
+                                    <span class="tooltip-icon" data-tooltip="해상도: 생성할 이미지의 크기입니다. 512×512가 기본이며, 클수록 더 세밀한 이미지를 생성하지만 VRAM을 더 사용합니다.">?</span>
+                                </div>
+                                
+                                <!-- 커스텀 해상도 입력 -->
+                                <div class="custom-resolution" id="customResolution" style="display: none;">
+                                    <input type="number" id="customWidth" placeholder="너비" value="512" min="256" max="2048" step="64">
+                                    <span>×</span>
+                                    <input type="number" id="customHeight" placeholder="높이" value="512" min="256" max="2048" step="64">
+                                </div>
+                                
+                                <div class="setting-with-tooltip">
+                                    <input type="number" id="seedInput" placeholder="시드" value="-1" title="시드: -1=랜덤, 같은 숫자=같은 이미지">
+                                    <span class="tooltip-icon" data-tooltip="시드: 이미지 생성의 기준 숫자입니다. -1은 랜덤이며, 같은 시드+프롬프트는 같은 이미지를 생성합니다. 결과가 마음에 들면 시드를 기억해두세요!">?</span>
+                                </div>
+                                
+                                <div class="setting-with-tooltip">
+                                    <input type="number" id="stepsInput" placeholder="스텝" value="8" min="1" max="50" title="스텝: 높을수록 품질↑ 속도↓">
+                                    <span class="tooltip-icon" data-tooltip="스텝(Steps): 이미지를 다듬는 횟수입니다. 4~8이 기본, 높을수록 품질이 좋아지지만 시간이 더 걸립니다. Z-Image는 Turbo 모델이라 4~12스텝이면 충분합니다.">?</span>
+                                </div>
+                                
+                                <div class="setting-with-tooltip">
+                                    <input type="number" id="numImagesInput" placeholder="개수" value="1" min="1" max="10" title="한 번에 생성할 이미지 개수">
+                                    <span class="tooltip-icon" data-tooltip="생성 개수: 한 번에 몇 장의 이미지를 만들지 설정합니다. 각 이미지는 시드가 1씩 증가하며, 여러 변형을 비교하고 싶을 때 유용합니다.">?</span>
+                                </div>
+                            </div>
+                            <div class="action-buttons">
+                                <button class="btn btn-secondary" id="btnPreview" title="256×256 크기로 빠르게 미리보기">
+                                    <i class="ri-eye-line"></i> 미리보기
+                                </button>
+                                <button class="btn btn-primary" id="btnGenerate" title="설정된 해상도로 이미지 생성">
+                                    <i class="ri-brush-line"></i> 생성
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- 갤러리 탭 -->
+            <section class="tab-content" id="tab-gallery">
+                <div class="tab-header">
+                    <h2><i class="ri-gallery-line"></i> 갤러리</h2>
+                    <button class="btn btn-secondary" id="btnRefreshGallery">
+                        <i class="ri-refresh-line"></i> 새로고침
+                    </button>
+                </div>
+                <div class="gallery-grid" id="galleryGrid"></div>
+            </section>
+            
+            <!-- 히스토리 탭 -->
+            <section class="tab-content" id="tab-history">
+                <div class="tab-header">
+                    <h2><i class="ri-history-line"></i> 프롬프트 히스토리</h2>
+                    <button class="btn btn-danger" id="btnClearHistory">
+                        <i class="ri-delete-bin-line"></i> 삭제
+                    </button>
+                </div>
+                <div class="history-list" id="historyList"></div>
+            </section>
+            
+            <!-- 즐겨찾기 탭 -->
+            <section class="tab-content" id="tab-favorites">
+                <div class="tab-header">
+                    <h2><i class="ri-star-line"></i> 즐겨찾기</h2>
+                </div>
+                <div class="favorites-list" id="favoritesList"></div>
+            </section>
+            
+            <!-- 설정 탭 -->
+            <section class="tab-content" id="tab-settings">
+                <div class="tab-header">
+                    <h2><i class="ri-settings-3-line"></i> 설정</h2>
+                </div>
+                
+                <div class="settings-section">
+                    <h3>🤖 모델 설정</h3>
+                    <div class="setting-group">
+                        <label>양자화</label>
+                        <select id="quantizationSelect">
+                            <option value="BF16 (기본, 최고품질)">BF16 (기본, 최고품질)</option>
+                            <!-- 서버에서 동적으로 옵션을 로드합니다 -->
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label>모델 경로 (선택)</label>
+                        <input type="text" id="modelPathInput" placeholder="비워두면 기본 경로">
+                    </div>
+                    <div class="setting-group">
+                        <label>
+                            <input type="checkbox" id="cpuOffloadCheck">
+                            CPU 오프로딩 (VRAM 부족 시)
+                        </label>
+                    </div>
+                    <div class="setting-actions">
+                        <button class="btn btn-primary" id="btnLoadModel">
+                            <i class="ri-download-line"></i> 모델 로드
+                        </button>
+                        <button class="btn btn-danger" id="btnUnloadModel">
+                            <i class="ri-upload-line"></i> 모델 언로드
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="settings-section">
+                    <h3>🔑 LLM API 설정 (번역/프롬프트 향상)</h3>
+                    <div class="setting-group">
+                        <label>LLM Provider</label>
+                        <select id="llmProviderSelect">
+                            <option value="openai">OpenAI</option>
+                            <!-- 서버에서 동적으로 로드 -->
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label>API 키</label>
+                        <input type="password" id="llmApiKeyInput" placeholder="API 키를 입력하세요">
+                    </div>
+                    <div class="setting-group" id="llmBaseUrlGroup" style="display: none;">
+                        <label>Base URL (커스텀 provider용)</label>
+                        <input type="text" id="llmBaseUrlInput" placeholder="https://api.example.com/v1">
+                    </div>
+                    <div class="setting-group">
+                        <label>모델 (비워두면 기본값 사용)</label>
+                        <div class="model-input-wrapper">
+                            <select id="llmModelSelect">
+                                <option value="">기본 모델</option>
+                                <option value="__custom__">✏️ 직접 입력...</option>
+                            </select>
+                            <input type="text" id="llmModelCustomInput" placeholder="모델명을 직접 입력 (예: gpt-4o)" style="display: none;">
+                        </div>
+                    </div>
+                    <div class="setting-info" id="llmProviderInfo">
+                        <small>💡 OpenAI, OpenRouter, Groq, Together AI, Ollama, LM Studio 등 OpenAI 호환 API를 지원합니다.</small>
+                    </div>
+                    <button class="btn btn-secondary" id="btnSaveLlmSettings">
+                        <i class="ri-save-line"></i> LLM 설정 저장
+                    </button>
+                </div>
+                
+                <div class="settings-section">
+                    <h3>📝 시스템 프롬프트 설정</h3>
+                    <p class="setting-description">번역 및 프롬프트 향상 시 LLM에 전달되는 시스템 프롬프트를 커스터마이징할 수 있습니다.</p>
+                    
+                    <div class="setting-group">
+                        <label>
+                            번역 시스템 프롬프트
+                            <button class="btn btn-xs btn-secondary" id="btnResetTranslatePrompt" title="기본값으로 초기화">
+                                <i class="ri-restart-line"></i> 초기화
+                            </button>
+                        </label>
+                        <textarea id="translateSystemPrompt" rows="6" placeholder="번역 시스템 프롬프트..."></textarea>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>
+                            향상 시스템 프롬프트
+                            <button class="btn btn-xs btn-secondary" id="btnResetEnhancePrompt" title="기본값으로 초기화">
+                                <i class="ri-restart-line"></i> 초기화
+                            </button>
+                        </label>
+                        <textarea id="enhanceSystemPrompt" rows="8" placeholder="향상 시스템 프롬프트..."></textarea>
+                    </div>
+                    
+                    <button class="btn btn-secondary" id="btnSaveSystemPrompts">
+                        <i class="ri-save-line"></i> 시스템 프롬프트 저장
+                    </button>
+                </div>
+                
+                <div class="settings-section">
+                    <h3>📁 출력 설정</h3>
+                    <div class="setting-group">
+                        <label>파일명 패턴</label>
+                        <select id="filenamePatternSelect">
+                            <option value="{date}_{time}_{seed}">날짜_시간_시드</option>
+                            <option value="{prompt_short}_{seed}">프롬프트_시드</option>
+                            <option value="image_{counter}_{seed}">image_번호_시드</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+    
+    <!-- 모달: 이미지 뷰어 -->
+    <div class="modal" id="imageModal">
+        <div class="modal-content image-viewer">
+            <button class="modal-close" id="closeImageModal">×</button>
+            <img id="modalImage" src="" alt="">
+            <div class="modal-info" id="modalInfo"></div>
+        </div>
+    </div>
+    
+    <!-- 모달: 템플릿 선택 -->
+    <div class="modal" id="templateModal">
+        <div class="modal-content">
+            <h3>프롬프트 템플릿</h3>
+            <div class="template-list" id="templateList"></div>
+            <button class="btn btn-secondary" onclick="closeModal('templateModal')">닫기</button>
+        </div>
+    </div>
+    
+    <!-- 모달: 즐겨찾기 저장 -->
+    <div class="modal" id="saveFavoriteModal">
+        <div class="modal-content">
+            <h3>즐겨찾기 저장</h3>
+            <input type="text" id="favNameInput" placeholder="이름">
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('saveFavoriteModal')">취소</button>
+                <button class="btn btn-primary" id="btnSaveFavorite">저장</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

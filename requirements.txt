@@ -1,0 +1,69 @@
+# Z-Image 개발환경 필수 패키지
+# Python 3.8 이상 필요
+
+# PyTorch (CUDA 12.1 버전)
+# CPU 전용이면 아래 주석 해제하고 GPU 버전 주석 처리
+# torch
+# torchvision
+
+# GPU 버전 (CUDA 12.6)
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Hugging Face 라이브러리
+transformers>=4.35.0
+# diffusers GitHub 최신 버전 (ZImagePipeline, GGUF 지원)
+# 중요: GGUF 양자화 모델 사용을 위해 반드시 GitHub 버전 설치 필요
+git+https://github.com/huggingface/diffusers
+accelerate>=0.25.0
+
+# GGUF 양자화 모델 지원
+gguf>=0.10.0
+
+# 이미지 처리
+Pillow>=9.0.0
+opencv-python>=4.8.0
+
+# 유틸리티
+numpy>=1.24.0
+scipy>=1.10.0
+tqdm>=4.65.0
+einops>=0.7.0
+
+# Hugging Face Hub
+huggingface-hub>=0.19.0
+
+# 기타 의존성
+safetensors>=0.4.0
+omegaconf>=2.3.0
+peft>=0.7.0
+
+# 양자화 (8bit/4bit 모델 로딩용 - CUDA 전용)
+bitsandbytes>=0.41.0
+
+# ===== WebUI 추가 패키지 =====
+
+# FastAPI 웹 서버
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+websockets>=12.0
+jinja2>=3.1.0
+aiofiles>=23.0.0
+
+# OpenAI API (번역/프롬프트 향상)
+openai>=1.0.0
+
+# 설정/데이터 관리
+pyyaml>=6.0
+
+# ===== 선택적: Real-ESRGAN 업스케일링 =====
+# Windows에서 빌드 문제가 있을 수 있습니다.
+# 업스케일링 기능이 필요하면 아래 명령어로 별도 설치:
+#   pip install realesrgan basicsr facexlib gfpgan
+# 또는 requirements-upscale.txt 사용:
+#   pip install -r requirements-upscale.txt
+
+
+
