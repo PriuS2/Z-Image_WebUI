@@ -5,15 +5,12 @@ let ws = null;
 let isGenerating = false;
 let isModelLoading = false;
 let templates = {};
-let negativePresets = {};
 let isTranslating = false;
 
 // ============= DOM 요소 =============
 const chatMessages = document.getElementById('chatMessages');
 const promptInput = document.getElementById('promptInput');
 const koreanInput = document.getElementById('koreanInput');
-const negativeInput = document.getElementById('negativeInput');
-const negativeRow = document.getElementById('negativeRow');
 const modelStatus = document.getElementById('modelStatus');
 
 // ============= WebSocket 연결 =============
@@ -276,7 +273,6 @@ async function generateImage(preview = false) {
     
     const requestBody = {
         prompt,
-        negative_prompt: negativeInput.value.trim(),
         width,
         height,
         steps: parseInt(document.getElementById('stepsInput').value) || 8,
@@ -673,22 +669,8 @@ function applyTemplate(name, template) {
     const koreanInputEl = document.getElementById('koreanInput');
     if (koreanInputEl) koreanInputEl.value = '';
     
-    if (template.negative) {
-        negativeInput.value = template.negative;
-        negativeRow.style.display = 'block';
-    }
-    
     closeModal('templateModal');
     addMessage('system', `✅ 템플릿 적용: ${name} (영어 프롬프트 직접 사용)`);
-}
-
-async function loadNegativePresets() {
-    try {
-        const result = await apiCall('/negative-presets');
-        negativePresets = result.presets;
-    } catch (error) {
-        console.error('네거티브 프리셋 로드 실패:', error);
-    }
 }
 
 // ============= 양자화 옵션 로드 =============
@@ -861,7 +843,7 @@ async function loadFavorites() {
                 <div class="favorite-item-header">
                     <span class="favorite-item-name">${escapeHtml(entry.name)}</span>
                     <div class="item-actions">
-                        <button class="btn btn-secondary" onclick="useFavorite('${escapeHtml(entry.prompt)}', '${escapeHtml(entry.negative_prompt || '')}')">사용</button>
+                        <button class="btn btn-secondary" onclick="useFavorite('${escapeHtml(entry.prompt)}')">사용</button>
                         <button class="btn btn-danger" onclick="deleteFavorite('${entry.id}')">삭제</button>
                     </div>
                 </div>
@@ -874,15 +856,11 @@ async function loadFavorites() {
     }
 }
 
-function useFavorite(prompt, negative) {
+function useFavorite(prompt) {
     promptInput.value = prompt;
     // 한국어 입력창 비우기 (영어 프롬프트 직접 사용)
     const koreanInputEl = document.getElementById('koreanInput');
     if (koreanInputEl) koreanInputEl.value = '';
-    if (negative) {
-        negativeInput.value = negative;
-        negativeRow.style.display = 'block';
-    }
     switchTab('chat');
     addMessage('system', '✅ 즐겨찾기 적용됨 (영어 프롬프트 직접 사용)');
 }
@@ -899,8 +877,7 @@ async function saveFavorite() {
     try {
         await apiCall('/favorites', 'POST', {
             name,
-            prompt,
-            negative_prompt: negativeInput.value.trim()
+            prompt
         });
         
         closeModal('saveFavoriteModal');
@@ -1241,7 +1218,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // 초기 데이터 로드
     updateModelStatus();
     loadTemplates();
-    loadNegativePresets();
     loadQuantizationOptions();
     loadLlmProviders();
     
@@ -1259,10 +1235,6 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btnEnhance').addEventListener('click', enhancePrompt);
     document.getElementById('btnTemplate').addEventListener('click', () => {
         document.getElementById('templateModal').classList.add('active');
-    });
-    document.getElementById('btnNegative').addEventListener('click', () => {
-        // Z-Image-Turbo(Flux 기반)는 네거티브 프롬프트를 지원하지 않음
-        addMessage('system', '⚠️ Z-Image-Turbo는 Flux 기반 모델이라 네거티브 프롬프트를 지원하지 않습니다. 원하지 않는 요소는 프롬프트에서 직접 배제해 주세요.');
     });
     
     // 한국어 입력창 번역 버튼

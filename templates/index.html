@@ -111,10 +111,6 @@
                             <button class="option-btn" id="btnEnhance" title="AI 향상">
                                 <i class="ri-magic-line"></i>
                             </button>
-                            <!-- 네거티브 프롬프트: Z-Image(Flux)는 지원하지 않음 -->
-                            <button class="option-btn" id="btnNegative" title="네거티브 프롬프트 (Flux 모델 미지원)">
-                                <i class="ri-prohibited-line"></i>
-                            </button>
                             
                             <!-- LLM 모델 선택 (번역/향상용) -->
                             <div class="llm-quick-select">
@@ -146,10 +142,6 @@
                                 <span class="translate-status" id="translateStatus"></span>
                             </div>
                             <textarea id="promptInput" placeholder="English prompt will appear here... (직접 편집 가능)" rows="3"></textarea>
-                        </div>
-                        
-                        <div class="input-row negative-row" id="negativeRow" style="display: none;">
-                            <textarea id="negativeInput" placeholder="네거티브 프롬프트 (원하지 않는 요소)" rows="2"></textarea>
                         </div>
                         
                         <div class="input-actions">

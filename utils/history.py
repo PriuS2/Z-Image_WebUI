@@ -14,7 +14,6 @@ class HistoryEntry:
     """히스토리 항목"""
     id: str
     prompt: str
-    negative_prompt: str
     settings: Dict[str, Any]
     timestamp: str
     image_path: Optional[str] = None
@@ -61,7 +60,6 @@ class HistoryManager:
     def add(
         self,
         prompt: str,
-        negative_prompt: str = "",
         settings: Optional[Dict[str, Any]] = None,
         image_path: Optional[str] = None
     ) -> HistoryEntry:
@@ -69,7 +67,6 @@ class HistoryManager:
         entry = HistoryEntry(
             id=datetime.now().strftime("%Y%m%d%H%M%S%f"),
             prompt=prompt,
-            negative_prompt=negative_prompt,
             settings=settings or {},
             timestamp=datetime.now().isoformat(),
             image_path=image_path

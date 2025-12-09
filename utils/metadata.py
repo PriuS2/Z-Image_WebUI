@@ -17,7 +17,6 @@ class ImageMetadata:
     @staticmethod
     def create_metadata(
         prompt: str,
-        negative_prompt: str = "",
         seed: int = -1,
         width: int = 512,
         height: int = 512,
@@ -30,7 +29,6 @@ class ImageMetadata:
         """메타데이터 딕셔너리 생성"""
         return {
             "prompt": prompt,
-            "negative_prompt": negative_prompt,
             "seed": seed,
             "width": width,
             "height": height,
@@ -100,8 +98,6 @@ class ImageMetadata:
         lines = []
         if "prompt" in metadata:
             lines.append(f"📝 프롬프트: {metadata['prompt']}")
-        if "negative_prompt" in metadata and metadata["negative_prompt"]:
-            lines.append(f"🚫 네거티브: {metadata['negative_prompt']}")
         if "seed" in metadata:
             lines.append(f"🎲 시드: {metadata['seed']}")
         if "width" in metadata and "height" in metadata:

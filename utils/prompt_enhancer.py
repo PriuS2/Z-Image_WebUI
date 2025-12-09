@@ -105,28 +105,6 @@ Rules:
         except Exception as e:
             print(f"프롬프트 향상 오류: {e}")
             return prompt, False
-    
-    def suggest_negative(self, prompt: str) -> tuple[str, bool]:
-        """프롬프트에 적합한 네거티브 프롬프트 제안"""
-        if not llm_client.is_available:
-            return "", False
-        
-        try:
-            result = llm_client.chat_completion(
-                messages=[
-                    {"role": "system", "content": "You are an expert at AI image generation. Based on the given prompt, suggest an appropriate negative prompt to avoid common issues. Output ONLY the negative prompt, no explanations."},
-                    {"role": "user", "content": f"Suggest negative prompt for:\n{prompt}"}
-                ],
-                temperature=0.5,
-                max_tokens=200,
-            )
-            
-            if result:
-                return result, True
-            return "", False
-        except Exception as e:
-            print(f"네거티브 프롬프트 제안 오류: {e}")
-            return "", False
 
 
 # 전역 인스턴스

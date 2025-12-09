@@ -15,7 +15,6 @@ class FavoriteEntry:
     id: str
     name: str
     prompt: str
-    negative_prompt: str
     settings: Dict[str, Any]
     created_at: str
     tags: List[str]
@@ -61,7 +60,6 @@ class FavoritesManager:
         self,
         name: str,
         prompt: str,
-        negative_prompt: str = "",
         settings: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None
     ) -> FavoriteEntry:
@@ -70,7 +68,6 @@ class FavoritesManager:
             id=datetime.now().strftime("%Y%m%d%H%M%S%f"),
             name=name,
             prompt=prompt,
-            negative_prompt=negative_prompt,
             settings=settings or {},
             created_at=datetime.now().isoformat(),
             tags=tags or []
@@ -103,7 +100,6 @@ class FavoritesManager:
         entry_id: str,
         name: Optional[str] = None,
         prompt: Optional[str] = None,
-        negative_prompt: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None
     ) -> bool:
@@ -114,8 +110,6 @@ class FavoritesManager:
                     entry.name = name
                 if prompt is not None:
                     entry.prompt = prompt
-                if negative_prompt is not None:
-                    entry.negative_prompt = negative_prompt
                 if settings is not None:
                     entry.settings = settings
                 if tags is not None:

@@ -33,7 +33,7 @@ from config.defaults import (
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
 )
-from config.templates import PROMPT_TEMPLATES, NEGATIVE_PRESETS
+from config.templates import PROMPT_TEMPLATES
 from utils.settings import settings
 from utils.translator import translator
 from utils.prompt_enhancer import prompt_enhancer
@@ -62,7 +62,6 @@ is_generating = False
 # ============= Pydantic 모델 =============
 class GenerateRequest(BaseModel):
     prompt: str
-    negative_prompt: str = ""
     width: int = 512
     height: int = 512
     steps: int = 8
@@ -95,7 +94,6 @@ class SettingsRequest(BaseModel):
 class FavoriteRequest(BaseModel):
     name: str
     prompt: str
-    negative_prompt: str = ""
     settings: dict = {}
 
 
@@ -441,7 +439,6 @@ async def generate_image(request: GenerateRequest):
             
             image = pipe(
                 prompt=final_prompt,
-                negative_prompt=request.negative_prompt if request.negative_prompt else None,
                 height=request.height,
                 width=request.width,
                 num_inference_steps=request.steps,
@@ -452,7 +449,6 @@ async def generate_image(request: GenerateRequest):
             # 메타데이터 생성 및 저장
             metadata = ImageMetadata.create_metadata(
                 prompt=final_prompt,
-                negative_prompt=request.negative_prompt,
                 seed=current_seed,
                 width=request.width,
                 height=request.height,
@@ -480,7 +476,6 @@ async def generate_image(request: GenerateRequest):
         # 히스토리 추가
         history_manager.add(
             prompt=request.prompt,
-            negative_prompt=request.negative_prompt,
             settings={
                 "width": request.width,
                 "height": request.height,
@@ -599,12 +594,6 @@ async def get_model_download_status():
     return {"status": status}
 
 
-@app.get("/api/negative-presets")
-async def get_negative_presets():
-    """네거티브 프롬프트 프리셋"""
-    return {"presets": NEGATIVE_PRESETS}
-
-
 @app.get("/api/history")
 async def get_history():
     """히스토리 목록"""
@@ -632,7 +621,6 @@ async def add_favorite(request: FavoriteRequest):
     entry = favorites_manager.add(
         name=request.name,
         prompt=request.prompt,
-        negative_prompt=request.negative_prompt,
         settings=request.settings
     )
     return {"success": True, "id": entry.id}
