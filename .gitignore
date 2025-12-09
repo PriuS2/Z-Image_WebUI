@@ -1,0 +1,92 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ===== 가상환경 =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== 환경 변수 =====
+.env
+.env.local
+.env.*.local
+
+# ===== IDE/에디터 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ===== OS 생성 파일 =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ===== 프로젝트 특정 =====
+# 생성된 이미지 출력 폴더
+outputs/
+
+# 사용자 데이터 (히스토리, 개인 설정)
+data/*
+data/history.json
+data/settings.yaml
+
+# ===== ML/AI 모델 파일 =====
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.gguf
+*.bin
+models/
+
+# ===== 로그 및 캐시 =====
+*.log
+logs/
+.cache/
+*.cache
+
+# ===== Hugging Face 캐시 =====
+.huggingface/
+
+# ===== Jupyter Notebook =====
+.ipynb_checkpoints/
+*.ipynb
+
+# ===== pytest =====
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== mypy =====
+.mypy_cache/
+
