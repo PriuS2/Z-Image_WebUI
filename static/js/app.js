@@ -1600,4 +1600,423 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     document.querySelector('.input-options').appendChild(favBtn);
+    
+    // ControlNet 초기화
+    initControlNet();
 });
+
+
+// ============= ControlNet 기능 =============
+let cnOriginalImageBase64 = null;
+let cnProcessedImageBase64 = null;
+let isControlNetLoaded = false;
+let isCnGenerating = false;
+
+function initControlNet() {
+    // ControlNet 탭 로드 시 상태 확인
+    updateControlNetStatus();
+    
+    // ControlNet 모델 로드/언로드
+    document.getElementById('btnLoadControlNet')?.addEventListener('click', loadControlNet);
+    document.getElementById('btnUnloadControlNet')?.addEventListener('click', unloadControlNet);
+    
+    // 이미지 업로드 드롭존
+    const dropzone = document.getElementById('cnDropzone');
+    const fileInput = document.getElementById('cnFileInput');
+    
+    if (dropzone && fileInput) {
+        // 클릭하여 파일 선택
+        dropzone.addEventListener('click', () => fileInput.click());
+        
+        // 파일 선택 시
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleCnImageUpload(e.target.files[0]);
+            }
+        });
+        
+        // 드래그 앤 드롭
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('dragover');
+        });
+        
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.classList.remove('dragover');
+        });
+        
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            
+            if (e.dataTransfer.files.length > 0) {
+                handleCnImageUpload(e.dataTransfer.files[0]);
+            }
+        });
+    }
+    
+    // 이미지 제거 버튼
+    document.getElementById('btnClearCnImage')?.addEventListener('click', clearCnImage);
+    
+    // 컨트롤 타입 선택
+    document.getElementById('cnControlTypeSelect')?.addEventListener('change', (e) => {
+        updateCnPreprocessSettings(e.target.value);
+        // 이미지가 있으면 자동 전처리
+        if (cnOriginalImageBase64) {
+            preprocessCnImage();
+        }
+    });
+    
+    // 전처리 버튼
+    document.getElementById('btnPreprocess')?.addEventListener('click', preprocessCnImage);
+    
+    // 번역 버튼
+    document.getElementById('btnCnTranslate')?.addEventListener('click', translateCnKoreanInput);
+    
+    // Control Scale 슬라이더
+    const controlScaleSlider = document.getElementById('cnControlScale');
+    const controlScaleValue = document.getElementById('cnControlScaleValue');
+    if (controlScaleSlider && controlScaleValue) {
+        controlScaleSlider.addEventListener('input', (e) => {
+            controlScaleValue.textContent = e.target.value;
+        });
+    }
+    
+    // 생성 버튼
+    document.getElementById('btnCnGenerate')?.addEventListener('click', generateWithControlNet);
+}
+
+async function updateControlNetStatus() {
+    try {
+        const status = await apiCall('/status');
+        isControlNetLoaded = status.controlnet_loaded || false;
+        
+        const statusBadge = document.getElementById('cnStatusBadge');
+        if (statusBadge) {
+            const dot = statusBadge.querySelector('.status-dot');
+            const text = statusBadge.querySelector('.status-text');
+            
+            if (isControlNetLoaded) {
+                dot.classList.remove('offline', 'loading');
+                dot.classList.add('online');
+                text.textContent = 'ControlNet 로드됨';
+            } else {
+                dot.classList.remove('online', 'loading');
+                dot.classList.add('offline');
+                text.textContent = 'ControlNet 미로드';
+            }
+        }
+        
+        // 기본 모델 상태도 확인
+        if (!status.model_loaded) {
+            addMessage('system', '⚠️ ControlNet을 사용하려면 먼저 기본 모델을 로드하세요.');
+        }
+        
+        // 전처리기 사용 가능 여부
+        if (!status.controlnet_preprocessor_available) {
+            addMessage('system', '⚠️ controlnet-aux가 설치되지 않았습니다. pip install controlnet-aux mediapipe');
+        }
+    } catch (error) {
+        console.error('ControlNet 상태 확인 실패:', error);
+    }
+}
+
+async function loadControlNet() {
+    try {
+        // 기본 모델 확인
+        const status = await apiCall('/status');
+        if (!status.model_loaded) {
+            addMessage('system', '❌ 기본 모델을 먼저 로드해주세요.');
+            return;
+        }
+        
+        showCnProgress('ControlNet 로드 중...', 10);
+        
+        const result = await apiCall('/controlnet/load', 'POST');
+        
+        if (result.success) {
+            isControlNetLoaded = true;
+            updateControlNetStatus();
+            showCnProgress('ControlNet 로드 완료!', 100);
+            setTimeout(hideCnProgress, 1500);
+        }
+    } catch (error) {
+        addMessage('system', `❌ ControlNet 로드 실패: ${error.message}`, 'error');
+        hideCnProgress();
+    }
+}
+
+async function unloadControlNet() {
+    try {
+        await apiCall('/controlnet/unload', 'POST');
+        isControlNetLoaded = false;
+        updateControlNetStatus();
+        addMessage('system', '✅ ControlNet 언로드 완료');
+    } catch (error) {
+        addMessage('system', `❌ ControlNet 언로드 실패: ${error.message}`, 'error');
+    }
+}
+
+function showCnProgress(label, percent) {
+    const container = document.getElementById('cnProgressContainer');
+    const labelEl = document.getElementById('cnProgressLabel');
+    const percentEl = document.getElementById('cnProgressPercent');
+    const fillEl = document.getElementById('cnProgressFill');
+    
+    if (container) container.style.display = 'block';
+    if (labelEl) labelEl.textContent = label;
+    if (percentEl) percentEl.textContent = `${Math.round(percent)}%`;
+    if (fillEl) fillEl.style.width = `${percent}%`;
+}
+
+function hideCnProgress() {
+    const container = document.getElementById('cnProgressContainer');
+    if (container) container.style.display = 'none';
+}
+
+function handleCnImageUpload(file) {
+    if (!file.type.startsWith('image/')) {
+        alert('이미지 파일만 업로드할 수 있습니다.');
+        return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        cnOriginalImageBase64 = e.target.result;
+        
+        // 미리보기 표시
+        const preview = document.getElementById('cnOriginalPreview');
+        const img = document.getElementById('cnOriginalImage');
+        if (preview && img) {
+            img.src = cnOriginalImageBase64;
+            preview.style.display = 'block';
+        }
+        
+        // 드롭존 숨기기
+        const dropzone = document.getElementById('cnDropzone');
+        if (dropzone) dropzone.style.display = 'none';
+        
+        // 전처리 설정 표시
+        const preprocessSettings = document.getElementById('cnPreprocessSettings');
+        if (preprocessSettings) preprocessSettings.style.display = 'block';
+        
+        // 현재 선택된 컨트롤 타입에 맞는 설정 표시
+        const controlType = document.getElementById('cnControlTypeSelect')?.value || 'canny';
+        updateCnPreprocessSettings(controlType);
+        
+        // 자동 전처리 실행
+        preprocessCnImage();
+    };
+    reader.readAsDataURL(file);
+}
+
+function clearCnImage() {
+    cnOriginalImageBase64 = null;
+    cnProcessedImageBase64 = null;
+    
+    // 미리보기 숨기기
+    const originalPreview = document.getElementById('cnOriginalPreview');
+    const processedPreview = document.getElementById('cnProcessedPreview');
+    const preprocessSettings = document.getElementById('cnPreprocessSettings');
+    const dropzone = document.getElementById('cnDropzone');
+    
+    if (originalPreview) originalPreview.style.display = 'none';
+    if (processedPreview) processedPreview.style.display = 'none';
+    if (preprocessSettings) preprocessSettings.style.display = 'none';
+    if (dropzone) dropzone.style.display = 'flex';
+    
+    // 파일 입력 초기화
+    const fileInput = document.getElementById('cnFileInput');
+    if (fileInput) fileInput.value = '';
+}
+
+function updateCnPreprocessSettings(controlType) {
+    // 모든 설정 그룹 숨기기
+    document.querySelectorAll('.cn-setting-group').forEach(el => {
+        el.style.display = 'none';
+    });
+    
+    // 선택된 타입의 설정만 표시
+    switch (controlType) {
+        case 'canny':
+            document.getElementById('cannySettings')?.style && (document.getElementById('cannySettings').style.display = 'block');
+            break;
+        case 'mlsd':
+            document.getElementById('mlsdSettings')?.style && (document.getElementById('mlsdSettings').style.display = 'block');
+            break;
+        case 'pose':
+            document.getElementById('poseSettings')?.style && (document.getElementById('poseSettings').style.display = 'block');
+            break;
+        // depth, hed는 추가 설정 없음
+    }
+}
+
+async function preprocessCnImage() {
+    if (!cnOriginalImageBase64) {
+        alert('이미지를 먼저 업로드해주세요.');
+        return;
+    }
+    
+    const controlType = document.getElementById('cnControlTypeSelect')?.value || 'canny';
+    
+    const requestBody = {
+        image_base64: cnOriginalImageBase64,
+        control_type: controlType,
+    };
+    
+    // 타입별 추가 파라미터
+    if (controlType === 'canny') {
+        requestBody.canny_low = parseInt(document.getElementById('cannyLow')?.value) || 100;
+        requestBody.canny_high = parseInt(document.getElementById('cannyHigh')?.value) || 200;
+    } else if (controlType === 'mlsd') {
+        requestBody.mlsd_thr_v = parseFloat(document.getElementById('mlsdThrV')?.value) || 0.1;
+        requestBody.mlsd_thr_d = parseFloat(document.getElementById('mlsdThrD')?.value) || 0.1;
+    } else if (controlType === 'pose') {
+        requestBody.pose_include_hand = document.getElementById('poseIncludeHand')?.checked || false;
+        requestBody.pose_include_face = document.getElementById('poseIncludeFace')?.checked || false;
+    }
+    
+    try {
+        showCnProgress('전처리 중...', 50);
+        
+        const result = await apiCall('/controlnet/preprocess', 'POST', requestBody);
+        
+        if (result.success) {
+            cnProcessedImageBase64 = result.processed_image;
+            
+            // 전처리된 이미지 미리보기
+            const preview = document.getElementById('cnProcessedPreview');
+            const img = document.getElementById('cnProcessedImage');
+            if (preview && img) {
+                img.src = `data:image/png;base64,${result.processed_image}`;
+                preview.style.display = 'block';
+            }
+            
+            showCnProgress('전처리 완료!', 100);
+            setTimeout(hideCnProgress, 1000);
+        }
+    } catch (error) {
+        addMessage('system', `❌ 전처리 실패: ${error.message}`, 'error');
+        hideCnProgress();
+    }
+}
+
+async function translateCnKoreanInput() {
+    const koreanInput = document.getElementById('cnKoreanInput');
+    const promptInput = document.getElementById('cnPromptInput');
+    
+    if (!koreanInput || !promptInput) return;
+    
+    const koreanText = koreanInput.value.trim();
+    if (!koreanText) return;
+    
+    // 한국어가 아니면 그대로 복사
+    if (!isKorean(koreanText)) {
+        promptInput.value = koreanText;
+        return;
+    }
+    
+    try {
+        const result = await apiCall('/translate', 'POST', { text: koreanText });
+        if (result.success) {
+            promptInput.value = result.translated;
+        }
+    } catch (error) {
+        addMessage('system', `❌ 번역 실패: ${error.message}`, 'error');
+    }
+}
+
+async function generateWithControlNet() {
+    if (isCnGenerating) {
+        alert('이미 생성 중입니다.');
+        return;
+    }
+    
+    if (!cnProcessedImageBase64) {
+        alert('컨트롤 이미지를 먼저 업로드하고 전처리해주세요.');
+        return;
+    }
+    
+    const prompt = document.getElementById('cnPromptInput')?.value?.trim();
+    if (!prompt) {
+        alert('프롬프트를 입력해주세요.');
+        return;
+    }
+    
+    // ControlNet 및 기본 모델 로드 확인
+    const status = await apiCall('/status');
+    if (!status.model_loaded) {
+        alert('기본 모델을 먼저 로드해주세요.');
+        return;
+    }
+    if (!status.controlnet_loaded) {
+        alert('ControlNet을 먼저 로드해주세요.');
+        return;
+    }
+    
+    isCnGenerating = true;
+    
+    const btnGenerate = document.getElementById('btnCnGenerate');
+    if (btnGenerate) {
+        btnGenerate.disabled = true;
+        btnGenerate.innerHTML = '<i class="ri-loader-4-line"></i> 생성 중...';
+    }
+    
+    // 해상도 파싱
+    const resolution = document.getElementById('cnResolutionSelect')?.value || '512x512';
+    const [width, height] = resolution.split('x').map(Number);
+    
+    const requestBody = {
+        prompt: prompt,
+        korean_prompt: document.getElementById('cnKoreanInput')?.value?.trim() || '',
+        control_image_base64: cnProcessedImageBase64,
+        control_type: document.getElementById('cnControlTypeSelect')?.value || 'canny',
+        control_context_scale: parseFloat(document.getElementById('cnControlScale')?.value) || 0.7,
+        width: width,
+        height: height,
+        steps: parseInt(document.getElementById('cnStepsInput')?.value) || 8,
+        seed: parseInt(document.getElementById('cnSeedInput')?.value) || -1,
+        num_images: parseInt(document.getElementById('cnNumImagesInput')?.value) || 1,
+        auto_translate: false,
+    };
+    
+    try {
+        showCnProgress('ControlNet 이미지 생성 중...', 30);
+        
+        const result = await apiCall('/controlnet/generate', 'POST', requestBody);
+        
+        if (result.success && result.images) {
+            // 결과 표시
+            const resultsSection = document.getElementById('cnResults');
+            const resultsGrid = document.getElementById('cnResultsGrid');
+            
+            if (resultsSection && resultsGrid) {
+                resultsSection.style.display = 'block';
+                resultsGrid.innerHTML = '';
+                
+                result.images.forEach(img => {
+                    const imgEl = document.createElement('img');
+                    imgEl.src = `data:image/png;base64,${img.base64}`;
+                    imgEl.alt = prompt;
+                    imgEl.title = `시드: ${img.seed}`;
+                    imgEl.onclick = () => showImageModal(img.path, { prompt, seed: img.seed });
+                    resultsGrid.appendChild(imgEl);
+                });
+            }
+            
+            showCnProgress('생성 완료!', 100);
+            setTimeout(hideCnProgress, 1500);
+            
+            addMessage('system', `✅ ControlNet 이미지 ${result.images.length}장 생성 완료! (시드: ${result.seed})`);
+        }
+    } catch (error) {
+        addMessage('system', `❌ ControlNet 생성 실패: ${error.message}`, 'error');
+        hideCnProgress();
+    } finally {
+        isCnGenerating = false;
+        if (btnGenerate) {
+            btnGenerate.disabled = false;
+            btnGenerate.innerHTML = '<i class="ri-brush-line"></i> ControlNet 생성';
+        }
+    }
+}

@@ -1293,3 +1293,380 @@ body {
 #chatQuantizationSelect option[style*="color: rgb(34, 197, 94)"] {
     background: rgba(34, 197, 94, 0.1);
 }
+
+
+/* ============= ControlNet 탭 스타일 ============= */
+.controlnet-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    max-width: 1400px;
+    margin: 0 auto;
+    width: 100%;
+}
+
+/* ControlNet 헤더 */
+.controlnet-header {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.controlnet-status {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.cn-status-badge {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+}
+
+.cn-actions {
+    display: flex;
+    gap: 8px;
+}
+
+/* ControlNet 메인 레이아웃 */
+.controlnet-main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    flex: 1;
+}
+
+.cn-left-panel,
+.cn-right-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.cn-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.cn-section h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+    font-size: 16px;
+    color: var(--text-primary);
+}
+
+.cn-section h3 i {
+    color: var(--accent);
+}
+
+.cn-section h4 {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+/* 컨트롤 타입 선택 */
+.cn-control-type {
+    margin-bottom: 16px;
+}
+
+.cn-control-type label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.cn-control-type select {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.cn-control-type select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* 드롭존 */
+.cn-dropzone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.cn-dropzone:hover,
+.cn-dropzone.dragover {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.05);
+}
+
+.dropzone-content i {
+    font-size: 48px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+}
+
+.dropzone-content p {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.dropzone-content small {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* 이미지 미리보기 */
+.cn-preview-container {
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.cn-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background: var(--bg-hover);
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.cn-preview-container img {
+    width: 100%;
+    max-height: 300px;
+    object-fit: contain;
+    display: block;
+}
+
+/* 전처리 설정 */
+.cn-preprocess-settings {
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    margin-top: 16px;
+}
+
+.cn-setting-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.cn-setting-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.cn-setting-group input[type="number"] {
+    width: 80px;
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.cn-setting-group input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+/* 프롬프트 영역 */
+.cn-prompt-area {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.cn-prompt-area .input-row {
+    margin-bottom: 0;
+}
+
+.cn-prompt-area label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.cn-prompt-area textarea {
+    width: 100%;
+    padding: 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 14px;
+    resize: none;
+    font-family: inherit;
+}
+
+.cn-prompt-area textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* 설정 그리드 */
+.cn-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 16px;
+}
+
+.cn-setting label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.cn-setting select,
+.cn-setting input {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.cn-setting select:focus,
+.cn-setting input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.cn-setting small {
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* Control Scale 슬라이더 */
+.cn-slider-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.cn-slider-container input[type="range"] {
+    flex: 1;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    outline: none;
+}
+
+.cn-slider-container input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.cn-slider-container input[type="range"]::-webkit-slider-thumb:hover {
+    background: var(--accent-hover);
+    transform: scale(1.1);
+}
+
+.cn-slider-container span {
+    min-width: 40px;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+/* 생성 버튼 */
+.cn-generate-actions {
+    margin-top: 16px;
+}
+
+.btn-lg {
+    padding: 14px 28px;
+    font-size: 16px;
+    width: 100%;
+    justify-content: center;
+}
+
+/* 결과 영역 */
+.cn-results {
+    margin-top: 16px;
+}
+
+.cn-results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+}
+
+.cn-results-grid img {
+    width: 100%;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.cn-results-grid img:hover {
+    transform: scale(1.02);
+}
+
+/* ControlNet 반응형 */
+@media (max-width: 1024px) {
+    .controlnet-main {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 768px) {
+    .controlnet-status {
+        flex-direction: column;
+        gap: 12px;
+    }
+    
+    .cn-actions {
+        width: 100%;
+    }
+    
+    .cn-actions .btn {
+        flex: 1;
+    }
+    
+    .cn-settings-grid {
+        grid-template-columns: 1fr;
+    }
+}

@@ -7,6 +7,7 @@ import asyncio
 import base64
 import random
 import gc
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -15,6 +16,11 @@ from io import BytesIO
 # 프로젝트 루트를 path에 추가
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
+
+# VideoX-Fun 경로 추가 (ControlNet 사용을 위해)
+VIDEOX_FUN_PATH = Path(r"C:\Users\tjseh\Downloads\fdsa\VideoX-Fun")
+if VIDEOX_FUN_PATH.exists():
+    sys.path.insert(0, str(VIDEOX_FUN_PATH))
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -32,6 +38,14 @@ from config.defaults import (
     QUANTIZATION_OPTIONS,
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
+    # ControlNet 설정
+    CONTROLNET_MODEL_REPO,
+    CONTROLNET_MODEL_FILENAME,
+    CONTROL_TYPES,
+    DEFAULT_CONTROLNET_SETTINGS,
+    CANNY_DEFAULTS,
+    MLSD_DEFAULTS,
+    POSE_DEFAULTS,
 )
 from config.templates import PROMPT_TEMPLATES
 from utils.settings import settings
@@ -41,6 +55,12 @@ from utils.metadata import ImageMetadata, filename_generator
 from utils.history import history_manager
 from utils.favorites import favorites_manager
 from utils.upscaler import upscaler, REALESRGAN_AVAILABLE
+from utils.controlnet_preprocessor import (
+    preprocessor as controlnet_preprocessor,
+    CONTROLNET_AUX_AVAILABLE,
+    image_to_base64 as cn_image_to_base64,
+    base64_to_image,
+)
 
 
 # ============= FastAPI 앱 설정 =============
@@ -57,6 +77,11 @@ pipe = None
 current_model = None
 device = None
 is_generating = False
+
+# ControlNet 관련 전역 변수
+controlnet_pipe = None
+controlnet_loaded = False
+controlnet_transformer = None  # ControlNet용 transformer
 
 
 # ============= Pydantic 모델 =============
@@ -105,6 +130,36 @@ class TranslateRequest(BaseModel):
 class EnhanceRequest(BaseModel):
     prompt: str
     style: str = "기본"
+
+
+# ============= ControlNet Pydantic 모델 =============
+class ControlNetPreprocessRequest(BaseModel):
+    image_base64: str
+    control_type: str = "canny"
+    # Canny 파라미터
+    canny_low: int = 100
+    canny_high: int = 200
+    # MLSD 파라미터
+    mlsd_thr_v: float = 0.1
+    mlsd_thr_d: float = 0.1
+    # Pose 파라미터
+    pose_include_hand: bool = False
+    pose_include_face: bool = False
+
+
+class ControlNetGenerateRequest(BaseModel):
+    prompt: str
+    korean_prompt: str = ""
+    control_image_base64: str  # 전처리된 컨트롤 이미지
+    control_type: str = "canny"
+    control_context_scale: float = 0.7
+    width: int = 512
+    height: int = 512
+    steps: int = 8
+    guidance_scale: float = 0.0
+    seed: int = -1
+    num_images: int = 1
+    auto_translate: bool = True
 
 
 # ============= 유틸리티 함수 =============
@@ -168,7 +223,7 @@ async def home(request: Request):
 @app.get("/api/status")
 async def get_status():
     """시스템 상태"""
-    global pipe, current_model, device
+    global pipe, current_model, device, controlnet_loaded
     return {
         "model_loaded": pipe is not None,
         "current_model": current_model,
@@ -176,6 +231,9 @@ async def get_status():
         "vram": get_vram_info(),
         "is_generating": is_generating,
         "upscaler_available": REALESRGAN_AVAILABLE,
+        # ControlNet 상태
+        "controlnet_loaded": controlnet_loaded,
+        "controlnet_preprocessor_available": CONTROLNET_AUX_AVAILABLE,
     }
 
 
@@ -675,6 +733,374 @@ async def get_gallery():
                 "metadata": metadata
             })
     return {"images": images}
+
+
+# ============= ControlNet API 엔드포인트 =============
+
+@app.get("/api/controlnet/status")
+async def get_controlnet_status():
+    """ControlNet 상태 및 설정 정보"""
+    return {
+        "loaded": controlnet_loaded,
+        "preprocessor_available": CONTROLNET_AUX_AVAILABLE,
+        "control_types": CONTROL_TYPES,
+        "default_settings": DEFAULT_CONTROLNET_SETTINGS,
+        "canny_defaults": CANNY_DEFAULTS,
+        "mlsd_defaults": MLSD_DEFAULTS,
+        "pose_defaults": POSE_DEFAULTS,
+        "model_repo": CONTROLNET_MODEL_REPO,
+    }
+
+
+@app.post("/api/controlnet/preprocess")
+async def preprocess_control_image(request: ControlNetPreprocessRequest):
+    """컨트롤 이미지 전처리"""
+    if not CONTROLNET_AUX_AVAILABLE:
+        raise HTTPException(
+            400, 
+            "controlnet-aux가 설치되지 않았습니다. pip install controlnet-aux mediapipe"
+        )
+    
+    try:
+        # base64 이미지 디코딩
+        input_image = base64_to_image(request.image_base64)
+        
+        # 컨트롤 타입에 따라 전처리
+        if request.control_type == "canny":
+            processed = controlnet_preprocessor.process_canny(
+                input_image,
+                low_threshold=request.canny_low,
+                high_threshold=request.canny_high,
+            )
+        elif request.control_type == "depth":
+            processed = controlnet_preprocessor.process_depth(input_image)
+        elif request.control_type == "pose":
+            processed = controlnet_preprocessor.process_pose(
+                input_image,
+                include_hand=request.pose_include_hand,
+                include_face=request.pose_include_face,
+            )
+        elif request.control_type == "hed":
+            processed = controlnet_preprocessor.process_hed(input_image)
+        elif request.control_type == "mlsd":
+            processed = controlnet_preprocessor.process_mlsd(
+                input_image,
+                thr_v=request.mlsd_thr_v,
+                thr_d=request.mlsd_thr_d,
+            )
+        else:
+            raise HTTPException(400, f"지원하지 않는 컨트롤 타입: {request.control_type}")
+        
+        # 결과를 base64로 변환
+        processed_base64 = cn_image_to_base64(processed)
+        
+        return {
+            "success": True,
+            "processed_image": processed_base64,
+            "control_type": request.control_type,
+            "width": processed.width,
+            "height": processed.height,
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"전처리 오류: {str(e)}")
+
+
+@app.post("/api/controlnet/load")
+async def load_controlnet():
+    """ControlNet 모델 로드 (VideoX-Fun 방식 - Transformer만 로드, 나머지 재사용)"""
+    global controlnet_pipe, controlnet_loaded, controlnet_transformer, pipe, device
+    
+    if pipe is None:
+        raise HTTPException(400, "기본 모델을 먼저 로드해주세요.")
+    
+    device = get_device()
+    
+    try:
+        await manager.broadcast({
+            "type": "model_progress",
+            "progress": 10,
+            "label": "🔧 ControlNet 초기화 중...",
+            "detail": "VideoX-Fun ControlNet Union 로드 준비",
+            "stage": "init"
+        })
+        await asyncio.sleep(0.1)
+        
+        from huggingface_hub import hf_hub_download, snapshot_download
+        from omegaconf import OmegaConf
+        
+        # VideoX-Fun 모듈 import
+        try:
+            from videox_fun.models import ZImageControlTransformer2DModel
+            from videox_fun.pipeline import ZImageControlPipeline
+        except ImportError as e:
+            raise HTTPException(400, f"VideoX-Fun 모듈을 찾을 수 없습니다. 경로를 확인해주세요: {e}")
+        
+        # Z-Image-Turbo 기본 모델 경로 확인 (transformer 로드용)
+        await manager.broadcast({
+            "type": "model_progress",
+            "progress": 20,
+            "label": "📥 기본 모델 경로 확인 중...",
+            "detail": "HuggingFace 캐시 확인...",
+            "stage": "check_cache"
+        })
+        await asyncio.sleep(0.1)
+        
+        base_model_path = await asyncio.to_thread(
+            snapshot_download,
+            repo_id="Tongyi-MAI/Z-Image-Turbo",
+        )
+        
+        # ControlNet 모델 다운로드
+        await manager.broadcast({
+            "type": "model_progress",
+            "progress": 30,
+            "label": "📥 ControlNet 모델 다운로드 중...",
+            "detail": f"저장소: {CONTROLNET_MODEL_REPO}",
+            "stage": "download_controlnet"
+        })
+        await asyncio.sleep(0.1)
+        
+        controlnet_path = await asyncio.to_thread(
+            hf_hub_download,
+            repo_id=CONTROLNET_MODEL_REPO,
+            filename=CONTROLNET_MODEL_FILENAME,
+        )
+        
+        # VideoX-Fun config 로드
+        config_path = VIDEOX_FUN_PATH / "config" / "z_image" / "z_image_control.yaml"
+        if not config_path.exists():
+            raise HTTPException(400, f"VideoX-Fun config 파일을 찾을 수 없습니다: {config_path}")
+        
+        config = OmegaConf.load(config_path)
+        
+        await manager.broadcast({
+            "type": "model_progress",
+            "progress": 50,
+            "label": "🔄 ControlNet Transformer 로딩 중...",
+            "detail": "ZImageControlTransformer2DModel 초기화...",
+            "stage": "load_transformer"
+        })
+        await asyncio.sleep(0.1)
+        
+        # VideoX-Fun 방식으로 ZImageControlTransformer2DModel 로드
+        controlnet_transformer = await asyncio.to_thread(
+            ZImageControlTransformer2DModel.from_pretrained,
+            base_model_path,
+            subfolder="transformer",
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.bfloat16,
+            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        )
+        
+        await manager.broadcast({
+            "type": "model_progress",
+            "progress": 70,
+            "label": "🔄 ControlNet 가중치 적용 중...",
+            "detail": "safetensors 가중치 로드...",
+            "stage": "load_weights"
+        })
+        await asyncio.sleep(0.1)
+        
+        # ControlNet 가중치 로드 및 적용
+        from safetensors.torch import load_file
+        state_dict = await asyncio.to_thread(load_file, controlnet_path)
+        
+        m, u = controlnet_transformer.load_state_dict(state_dict, strict=False)
+        print(f"ControlNet 가중치 로드 - missing keys: {len(m)}, unexpected keys: {len(u)}")
+        
+        # GPU로 이동
+        controlnet_transformer = controlnet_transformer.to(device)
+        
+        await manager.broadcast({
+            "type": "model_progress",
+            "progress": 90,
+            "label": "🔗 ZImageControlPipeline 초기화...",
+            "detail": "기존 VAE, Text Encoder 재사용...",
+            "stage": "init_pipeline"
+        })
+        await asyncio.sleep(0.1)
+        
+        # ZImageControlPipeline 생성 (기존 파이프라인 컴포넌트 재사용으로 메모리 절약)
+        controlnet_pipe = ZImageControlPipeline(
+            vae=pipe.vae,
+            tokenizer=pipe.tokenizer,
+            text_encoder=pipe.text_encoder,
+            transformer=controlnet_transformer,
+            scheduler=pipe.scheduler,
+        )
+        
+        # GPU에 유지 (CPU offload 제거 - 속도 향상)
+        # VRAM이 부족한 경우에만 아래 주석 해제
+        # controlnet_pipe.enable_model_cpu_offload(device=device)
+        
+        controlnet_loaded = True
+        
+        await manager.broadcast({
+            "type": "model_progress",
+            "progress": 100,
+            "label": "✅ ControlNet 로드 완료!",
+            "detail": f"VRAM 사용량: {get_vram_info()}",
+            "stage": "complete"
+        })
+        
+        await manager.broadcast({
+            "type": "complete",
+            "content": "✅ ControlNet 모델 로드 완료!"
+        })
+        
+        return {"success": True, "message": "ControlNet 로드 완료"}
+        
+    except Exception as e:
+        controlnet_loaded = False
+        controlnet_transformer = None
+        controlnet_pipe = None
+        await manager.broadcast({
+            "type": "model_progress",
+            "progress": 0,
+            "label": "❌ ControlNet 로드 실패",
+            "detail": str(e),
+            "stage": "error"
+        })
+        raise HTTPException(500, f"ControlNet 로드 실패: {str(e)}")
+
+
+@app.post("/api/controlnet/unload")
+async def unload_controlnet():
+    """ControlNet 모델 언로드"""
+    global controlnet_pipe, controlnet_loaded, controlnet_transformer
+    
+    controlnet_pipe = None
+    controlnet_transformer = None
+    controlnet_loaded = False
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+    
+    await manager.broadcast({
+        "type": "complete",
+        "content": "✅ ControlNet 언로드 완료!"
+    })
+    
+    return {"success": True, "message": "ControlNet 언로드 완료"}
+
+
+@app.post("/api/controlnet/generate")
+async def generate_with_controlnet(request: ControlNetGenerateRequest):
+    """ControlNet을 사용한 이미지 생성 (VideoX-Fun 방식)"""
+    global pipe, controlnet_pipe, controlnet_loaded, is_generating, device
+    
+    if pipe is None:
+        raise HTTPException(400, "기본 모델이 로드되지 않았습니다.")
+    
+    if not controlnet_loaded or controlnet_pipe is None:
+        raise HTTPException(400, "ControlNet이 로드되지 않았습니다.")
+    
+    if is_generating:
+        raise HTTPException(400, "이미 생성 중입니다.")
+    
+    if not request.prompt.strip():
+        raise HTTPException(400, "프롬프트를 입력해주세요.")
+    
+    is_generating = True
+    
+    try:
+        # 번역
+        final_prompt = request.prompt
+        if request.auto_translate and translator.is_korean(request.prompt):
+            await manager.broadcast({"type": "system", "content": "🌐 프롬프트 번역 중..."})
+            final_prompt, success = translator.translate(request.prompt)
+            if not success:
+                await manager.broadcast({"type": "warning", "content": "⚠️ 번역 실패, 원문 사용"})
+        
+        # 컨트롤 이미지 디코딩
+        control_image_pil = base64_to_image(request.control_image_base64)
+        
+        # 컨트롤 이미지를 생성 해상도에 맞게 리사이즈
+        control_image_pil = controlnet_preprocessor.resize_for_condition(
+            control_image_pil, request.width, request.height
+        )
+        
+        # VideoX-Fun 방식으로 control_image 변환 (PIL -> Tensor)
+        control_image_np = np.array(control_image_pil.convert("RGB"))
+        control_image_tensor = torch.from_numpy(control_image_np)
+        control_image_tensor = control_image_tensor.unsqueeze(0).permute(0, 3, 1, 2) / 255.0  # [1, C, H, W]
+        
+        # 시드 설정
+        seed = request.seed if request.seed != -1 else random.randint(0, 2147483647)
+        
+        images = []
+        for i in range(request.num_images):
+            current_seed = seed + i
+            await manager.broadcast({
+                "type": "progress",
+                "content": f"🎨 ControlNet 이미지 생성 중... ({i+1}/{request.num_images})"
+            })
+            
+            generator = torch.Generator(device=device).manual_seed(current_seed)
+            
+            # VideoX-Fun ZImageControlPipeline으로 생성 (inference mode로 속도 향상)
+            with torch.inference_mode():
+                image = controlnet_pipe(
+                    prompt=final_prompt,
+                    height=request.height,
+                    width=request.width,
+                    num_inference_steps=request.steps,
+                    guidance_scale=request.guidance_scale,
+                    generator=generator,
+                    control_image=control_image_tensor,
+                    control_context_scale=request.control_context_scale,
+                ).images[0]
+            
+            # 메타데이터 생성 및 저장
+            metadata = ImageMetadata.create_metadata(
+                prompt=final_prompt,
+                seed=current_seed,
+                width=request.width,
+                height=request.height,
+                steps=request.steps,
+                guidance_scale=request.guidance_scale,
+                model=f"{current_model} + ControlNet ({request.control_type})",
+            )
+            
+            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+            filename = filename_generator.generate(
+                pattern=settings.get("filename_pattern", "{date}_{time}_{seed}"),
+                prompt=final_prompt,
+                seed=current_seed
+            )
+            # ControlNet 이미지임을 표시
+            filename = filename.replace(".png", f"_cn_{request.control_type}.png")
+            output_path = OUTPUTS_DIR / filename
+            ImageMetadata.save_with_metadata(image, output_path, metadata)
+            
+            images.append({
+                "base64": image_to_base64(image),
+                "filename": filename,
+                "seed": current_seed,
+                "path": f"/outputs/{filename}"
+            })
+        
+        await manager.broadcast({
+            "type": "complete",
+            "content": f"✅ ControlNet {len(images)}장 생성 완료! (시드: {seed})"
+        })
+        
+        return {
+            "success": True,
+            "images": images,
+            "seed": seed,
+            "prompt": final_prompt,
+            "control_type": request.control_type,
+        }
+        
+    except Exception as e:
+        await manager.broadcast({"type": "error", "content": f"❌ ControlNet 생성 오류: {str(e)}"})
+        raise HTTPException(500, str(e))
+    
+    finally:
+        is_generating = False
 
 
 @app.post("/api/settings")

@@ -21,6 +21,10 @@
                     <i class="ri-chat-3-line"></i>
                     <span>대화</span>
                 </button>
+                <button class="nav-item" data-tab="controlnet">
+                    <i class="ri-focus-3-line"></i>
+                    <span>ControlNet</span>
+                </button>
                 <button class="nav-item" data-tab="gallery">
                     <i class="ri-gallery-line"></i>
                     <span>갤러리</span>
@@ -189,6 +193,211 @@
                                 <button class="btn btn-primary" id="btnGenerate" title="설정된 해상도로 이미지 생성">
                                     <i class="ri-brush-line"></i> 생성
                                 </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- ControlNet 탭 -->
+            <section class="tab-content" id="tab-controlnet">
+                <div class="controlnet-container">
+                    <!-- ControlNet 상단 바 -->
+                    <div class="controlnet-header">
+                        <div class="controlnet-status">
+                            <div class="cn-status-badge" id="cnStatusBadge">
+                                <span class="status-dot offline"></span>
+                                <span class="status-text">ControlNet 미로드</span>
+                            </div>
+                            <div class="cn-actions">
+                                <button class="btn btn-sm btn-primary" id="btnLoadControlNet" title="ControlNet 모델 로드">
+                                    <i class="ri-download-line"></i> ControlNet 로드
+                                </button>
+                                <button class="btn btn-sm btn-danger" id="btnUnloadControlNet" title="ControlNet 모델 언로드">
+                                    <i class="ri-close-line"></i> 언로드
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- ControlNet 프로그레스 바 -->
+                        <div class="progress-container" id="cnProgressContainer" style="display: none;">
+                            <div class="progress-info">
+                                <span class="progress-label" id="cnProgressLabel">로딩 중...</span>
+                                <span class="progress-percent" id="cnProgressPercent">0%</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="cnProgressFill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-detail" id="cnProgressDetail"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="controlnet-main">
+                        <!-- 좌측: 컨트롤 이미지 영역 -->
+                        <div class="cn-left-panel">
+                            <div class="cn-section">
+                                <h3><i class="ri-image-add-line"></i> 컨트롤 이미지</h3>
+                                
+                                <!-- 컨트롤 타입 선택 -->
+                                <div class="cn-control-type">
+                                    <label>컨트롤 타입</label>
+                                    <select id="cnControlTypeSelect">
+                                        <option value="canny">Canny Edge (윤곽선)</option>
+                                        <option value="depth">Depth Map (깊이)</option>
+                                        <option value="pose">Pose (포즈)</option>
+                                        <option value="hed">HED Edge (부드러운 윤곽)</option>
+                                        <option value="mlsd">MLSD Lines (직선)</option>
+                                    </select>
+                                </div>
+                                
+                                <!-- 이미지 업로드 드롭존 -->
+                                <div class="cn-dropzone" id="cnDropzone">
+                                    <div class="dropzone-content">
+                                        <i class="ri-upload-cloud-2-line"></i>
+                                        <p>이미지를 드래그하거나 클릭하여 업로드</p>
+                                        <small>PNG, JPG, WEBP 지원</small>
+                                    </div>
+                                    <input type="file" id="cnFileInput" accept="image/*" hidden>
+                                </div>
+                                
+                                <!-- 업로드된 원본 이미지 미리보기 -->
+                                <div class="cn-preview-container" id="cnOriginalPreview" style="display: none;">
+                                    <div class="cn-preview-header">
+                                        <span>원본 이미지</span>
+                                        <button class="btn btn-xs btn-danger" id="btnClearCnImage" title="이미지 제거">
+                                            <i class="ri-close-line"></i>
+                                        </button>
+                                    </div>
+                                    <img id="cnOriginalImage" src="" alt="원본 이미지">
+                                </div>
+                                
+                                <!-- 전처리 설정 -->
+                                <div class="cn-preprocess-settings" id="cnPreprocessSettings" style="display: none;">
+                                    <h4>전처리 설정</h4>
+                                    
+                                    <!-- Canny 설정 -->
+                                    <div class="cn-setting-group canny-settings" id="cannySettings">
+                                        <label>
+                                            Low Threshold
+                                            <input type="number" id="cannyLow" value="100" min="0" max="255">
+                                        </label>
+                                        <label>
+                                            High Threshold
+                                            <input type="number" id="cannyHigh" value="200" min="0" max="255">
+                                        </label>
+                                    </div>
+                                    
+                                    <!-- MLSD 설정 -->
+                                    <div class="cn-setting-group mlsd-settings" id="mlsdSettings" style="display: none;">
+                                        <label>
+                                            Value Threshold
+                                            <input type="number" id="mlsdThrV" value="0.1" min="0" max="1" step="0.01">
+                                        </label>
+                                        <label>
+                                            Distance Threshold
+                                            <input type="number" id="mlsdThrD" value="0.1" min="0" max="1" step="0.01">
+                                        </label>
+                                    </div>
+                                    
+                                    <!-- Pose 설정 -->
+                                    <div class="cn-setting-group pose-settings" id="poseSettings" style="display: none;">
+                                        <label>
+                                            <input type="checkbox" id="poseIncludeHand">
+                                            손 포즈 포함
+                                        </label>
+                                        <label>
+                                            <input type="checkbox" id="poseIncludeFace">
+                                            얼굴 포즈 포함
+                                        </label>
+                                    </div>
+                                    
+                                    <button class="btn btn-secondary" id="btnPreprocess">
+                                        <i class="ri-magic-line"></i> 전처리 실행
+                                    </button>
+                                </div>
+                                
+                                <!-- 전처리된 컨트롤 이미지 미리보기 -->
+                                <div class="cn-preview-container" id="cnProcessedPreview" style="display: none;">
+                                    <div class="cn-preview-header">
+                                        <span>전처리된 이미지</span>
+                                    </div>
+                                    <img id="cnProcessedImage" src="" alt="전처리된 이미지">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 우측: 프롬프트 및 생성 설정 -->
+                        <div class="cn-right-panel">
+                            <div class="cn-section">
+                                <h3><i class="ri-edit-line"></i> 프롬프트</h3>
+                                
+                                <div class="cn-prompt-area">
+                                    <div class="input-row">
+                                        <label>한국어 입력</label>
+                                        <textarea id="cnKoreanInput" placeholder="여기에 한국어로 입력하세요..." rows="2"></textarea>
+                                        <button class="btn btn-xs btn-primary" id="btnCnTranslate">
+                                            <i class="ri-translate-2"></i> 번역
+                                        </button>
+                                    </div>
+                                    
+                                    <div class="input-row">
+                                        <label>영어 프롬프트</label>
+                                        <textarea id="cnPromptInput" placeholder="English prompt..." rows="3"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="cn-section">
+                                <h3><i class="ri-settings-4-line"></i> 생성 설정</h3>
+                                
+                                <div class="cn-settings-grid">
+                                    <div class="cn-setting">
+                                        <label>Control Scale</label>
+                                        <div class="cn-slider-container">
+                                            <input type="range" id="cnControlScale" min="0.5" max="1.0" step="0.05" value="0.7">
+                                            <span id="cnControlScaleValue">0.7</span>
+                                        </div>
+                                        <small>컨트롤 강도 (권장: 0.65~0.80)</small>
+                                    </div>
+                                    
+                                    <div class="cn-setting">
+                                        <label>해상도</label>
+                                        <select id="cnResolutionSelect">
+                                            <option value="512x512">512×512</option>
+                                            <option value="768x768">768×768</option>
+                                            <option value="1024x1024">1024×1024</option>
+                                            <option value="512x768">512×768 (세로)</option>
+                                            <option value="768x512">768×512 (가로)</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="cn-setting">
+                                        <label>시드</label>
+                                        <input type="number" id="cnSeedInput" value="-1" placeholder="-1 = 랜덤">
+                                    </div>
+                                    
+                                    <div class="cn-setting">
+                                        <label>스텝</label>
+                                        <input type="number" id="cnStepsInput" value="8" min="1" max="50">
+                                    </div>
+                                    
+                                    <div class="cn-setting">
+                                        <label>생성 개수</label>
+                                        <input type="number" id="cnNumImagesInput" value="1" min="1" max="10">
+                                    </div>
+                                </div>
+                                
+                                <div class="cn-generate-actions">
+                                    <button class="btn btn-primary btn-lg" id="btnCnGenerate">
+                                        <i class="ri-brush-line"></i> ControlNet 생성
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <!-- 생성 결과 -->
+                            <div class="cn-section cn-results" id="cnResults" style="display: none;">
+                                <h3><i class="ri-image-line"></i> 생성 결과</h3>
+                                <div class="cn-results-grid" id="cnResultsGrid"></div>
                             </div>
                         </div>
                     </div>

@@ -125,3 +125,63 @@ THEMES = {
     "라이트 모드": "light",
     "시스템 설정": "system",
 }
+
+# ============= ControlNet 설정 =============
+
+# ControlNet 모델 저장소
+CONTROLNET_MODEL_REPO = "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union"
+CONTROLNET_MODEL_FILENAME = "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"
+
+# 컨트롤 타입 정의
+CONTROL_TYPES = {
+    "canny": {
+        "name": "Canny Edge",
+        "description": "윤곽선 추출 (날카로운 엣지)",
+        "icon": "ri-pencil-ruler-2-line",
+    },
+    "depth": {
+        "name": "Depth Map",
+        "description": "깊이 맵 추출 (원근감)",
+        "icon": "ri-3d-cude-sphere-line",
+    },
+    "pose": {
+        "name": "Pose",
+        "description": "인체 포즈 스켈레톤 추출",
+        "icon": "ri-body-scan-line",
+    },
+    "hed": {
+        "name": "HED Edge",
+        "description": "부드러운 윤곽선 추출",
+        "icon": "ri-brush-line",
+    },
+    "mlsd": {
+        "name": "MLSD Lines",
+        "description": "직선 구조 추출 (건축물)",
+        "icon": "ri-layout-grid-line",
+    },
+}
+
+# ControlNet 기본 설정
+DEFAULT_CONTROLNET_SETTINGS = {
+    "control_context_scale": 0.7,  # 권장 범위: 0.65 ~ 0.80
+    "control_context_scale_min": 0.5,
+    "control_context_scale_max": 1.0,
+}
+
+# Canny 전처리 기본값
+CANNY_DEFAULTS = {
+    "low_threshold": 100,
+    "high_threshold": 200,
+}
+
+# MLSD 전처리 기본값
+MLSD_DEFAULTS = {
+    "thr_v": 0.1,
+    "thr_d": 0.1,
+}
+
+# Pose 전처리 기본값
+POSE_DEFAULTS = {
+    "include_hand": False,
+    "include_face": False,
+}
