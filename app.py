@@ -827,8 +827,73 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             })
             await asyncio.sleep(0.1)
             
-            # CPU 오프로드 옵션 (메모리 최적화보다 우선)
-            if model_request.cpu_offload or memory_opt == "model_cpu_offload":
+            # 다중 GPU 모드: 실제 메모리 분산
+            if use_multi_gpu and torch.cuda.device_count() >= 2:
+                await ws_manager.broadcast({
+                    "type": "model_progress", 
+                    "progress": 78, 
+                    "label": "🖥️ 다중 GPU에 모델 분산 중...",
+                    "detail": f"{torch.cuda.device_count()}개 GPU에 메모리 분산",
+                    "stage": "multi_gpu"
+                })
+                
+                # accelerate를 사용한 다중 GPU 분산
+                try:
+                    from accelerate import dispatch_model, infer_auto_device_map
+                    from accelerate.utils import get_balanced_memory
+                    
+                    # Transformer 모델을 여러 GPU에 분산
+                    if hasattr(pipe, 'transformer') and pipe.transformer is not None:
+                        # 각 GPU의 최대 메모리 설정 (90% 사용)
+                        max_memory = {}
+                        for i in range(torch.cuda.device_count()):
+                            total_mem = torch.cuda.get_device_properties(i).total_memory
+                            max_memory[i] = int(total_mem * 0.9)
+                        max_memory["cpu"] = "32GB"  # CPU 메모리 한도
+                        
+                        # 디바이스 맵 자동 생성
+                        device_map = await asyncio.to_thread(
+                            infer_auto_device_map,
+                            pipe.transformer,
+                            max_memory=max_memory,
+                            no_split_module_classes=["ZImageTransformerBlock", "Attention", "FeedForward"]
+                        )
+                        
+                        # 모델 분산 적용
+                        pipe.transformer = await asyncio.to_thread(
+                            dispatch_model,
+                            pipe.transformer,
+                            device_map=device_map
+                        )
+                        
+                        # 나머지 컴포넌트는 GPU 0에
+                        if hasattr(pipe, 'text_encoder') and pipe.text_encoder is not None:
+                            pipe.text_encoder = pipe.text_encoder.to("cuda:0")
+                        if hasattr(pipe, 'vae') and pipe.vae is not None:
+                            pipe.vae = pipe.vae.to("cuda:0")
+                        
+                        print(f"✅ 다중 GPU 분산 완료: {device_map}")
+                        await ws_manager.broadcast({
+                            "type": "model_progress", 
+                            "progress": 85, 
+                            "label": "✅ 다중 GPU 분산 완료",
+                            "detail": f"Transformer가 {len(set(device_map.values()))}개 GPU에 분산됨",
+                            "stage": "multi_gpu_done"
+                        })
+                    else:
+                        # Transformer가 없으면 일반 CPU 오프로드 사용
+                        await asyncio.to_thread(pipe.enable_model_cpu_offload)
+                        print("⚠️ Transformer 모델이 없어 CPU 오프로드 사용")
+                        
+                except ImportError:
+                    print("⚠️ accelerate 라이브러리 없음, CPU 오프로드 사용")
+                    await asyncio.to_thread(pipe.enable_model_cpu_offload)
+                except Exception as e:
+                    print(f"⚠️ 다중 GPU 분산 실패: {e}, CPU 오프로드 사용")
+                    await asyncio.to_thread(pipe.enable_model_cpu_offload)
+                    
+            # CPU 오프로드 옵션
+            elif model_request.cpu_offload or memory_opt == "model_cpu_offload":
                 await asyncio.to_thread(pipe.enable_model_cpu_offload)
                 await ws_manager.broadcast({
                     "type": "model_progress", 
@@ -846,16 +911,6 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
                     "detail": "최대 메모리 절약 모드 (느림)",
                     "stage": "cpu_offload"
                 })
-            elif use_multi_gpu:
-                # 다중 GPU: device_map 사용
-                await ws_manager.broadcast({
-                    "type": "model_progress", 
-                    "progress": 80, 
-                    "label": "🖥️ 다중 GPU에 모델 분산 중...",
-                    "detail": f"{torch.cuda.device_count()}개 GPU 사용",
-                    "stage": "multi_gpu"
-                })
-                await asyncio.to_thread(pipe.enable_model_cpu_offload)
             else:
                 await asyncio.to_thread(pipe.to, device)
             
