@@ -16,11 +16,8 @@ import asyncio
 from config.defaults import DATA_DIR, OUTPUTS_DIR
 
 
-def get_computer_id() -> str:
-    """
-    컴퓨터 이름 기반 고유 ID 생성
-    같은 컴퓨터에서는 항상 동일한 ID 반환
-    """
+def get_server_hostname() -> str:
+    """서버(로컬) 컴퓨터 이름 반환"""
     hostname = socket.gethostname()
     # 컴퓨터 이름을 안전한 형식으로 변환 (알파벳, 숫자, 하이픈, 언더스코어만 허용)
     safe_hostname = re.sub(r'[^a-zA-Z0-9_-]', '_', hostname)
@@ -29,6 +26,25 @@ def get_computer_id() -> str:
         hash_suffix = hashlib.md5(hostname.encode()).hexdigest()[:8]
         safe_hostname = safe_hostname[:41] + "_" + hash_suffix
     return safe_hostname
+
+
+def get_client_id(client_host: Optional[str]) -> str:
+    """
+    클라이언트 기반 고유 ID 생성
+    - 로컬 접속(localhost): 서버 컴퓨터 이름 사용
+    - 외부 접속: 클라이언트 IP 사용
+    같은 클라이언트에서는 항상 동일한 ID 반환
+    """
+    # localhost 접속인 경우 서버 컴퓨터 이름 사용
+    localhost_addresses = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+    
+    if not client_host or client_host in localhost_addresses:
+        return get_server_hostname()
+    
+    # 외부 접속인 경우 IP를 안전한 형식으로 변환
+    # IPv6 주소의 ':'를 '_'로 변환
+    safe_ip = re.sub(r'[^a-zA-Z0-9_-]', '_', client_host)
+    return f"client_{safe_ip}"
 
 
 # 세션 데이터 디렉토리
@@ -196,33 +212,37 @@ class SessionManager:
         # 컴퓨터 이름 형식 또는 기존 UUID 형식 모두 허용 (호환성)
         return bool(self.SESSION_ID_PATTERN.match(session_id) or self.UUID_PATTERN.match(session_id))
     
-    def generate_session_id(self) -> str:
-        """새 세션 ID 생성 - 컴퓨터 이름 기반"""
-        return get_computer_id()
+    def generate_session_id(self, client_host: Optional[str] = None) -> str:
+        """새 세션 ID 생성 - 클라이언트 기반"""
+        return get_client_id(client_host)
     
-    async def get_or_create_session(self, session_id: Optional[str] = None) -> SessionInfo:
-        """세션 가져오기 또는 생성 - 컴퓨터 이름 기반"""
+    async def get_or_create_session(self, session_id: Optional[str] = None, client_host: Optional[str] = None) -> SessionInfo:
+        """
+        세션 가져오기 또는 생성 - 클라이언트 기반
+        - 로컬 접속: 서버 컴퓨터 이름 사용 (브라우저 닫아도 데이터 유지)
+        - 외부 접속: 클라이언트 IP 사용
+        """
         async with self._lock:
-            # 컴퓨터 이름 기반 ID 사용 (같은 컴퓨터면 항상 동일)
-            computer_id = get_computer_id()
+            # 클라이언트 기반 ID 사용 (같은 클라이언트면 항상 동일)
+            client_id = get_client_id(client_host)
             
-            # 기존 컴퓨터 ID 세션이 있으면 사용
-            if computer_id in self._sessions:
-                session = self._sessions[computer_id]
+            # 기존 클라이언트 ID 세션이 있으면 사용
+            if client_id in self._sessions:
+                session = self._sessions[client_id]
                 session.update_activity()
                 return session
             
             # 디렉토리가 있으면 세션 복원
-            session_dir = SESSIONS_DIR / computer_id
+            session_dir = SESSIONS_DIR / client_id
             if session_dir.exists():
-                session = SessionInfo(session_id=computer_id)
-                self._sessions[computer_id] = session
+                session = SessionInfo(session_id=client_id)
+                self._sessions[client_id] = session
                 session.update_activity()
                 return session
             
-            # 새 세션 생성 (컴퓨터 이름 기반)
-            session = SessionInfo(session_id=computer_id)
-            self._sessions[computer_id] = session
+            # 새 세션 생성 (클라이언트 기반)
+            session = SessionInfo(session_id=client_id)
+            self._sessions[client_id] = session
             
             # 디렉토리 생성
             session.get_data_dir()

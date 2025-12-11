@@ -246,9 +246,11 @@ def get_vram_info() -> str:
 
 
 async def get_session_from_request(request: Request) -> SessionInfo:
-    """요청에서 세션 가져오기 또는 생성"""
+    """요청에서 세션 가져오기 또는 생성 - 클라이언트 IP 기반"""
     session_id = request.cookies.get(SessionManager.COOKIE_NAME)
-    session = await session_manager.get_or_create_session(session_id)
+    # 클라이언트 IP 가져오기
+    client_host = request.client.host if request.client else None
+    session = await session_manager.get_or_create_session(session_id, client_host)
     return session
 
 
@@ -1272,8 +1274,9 @@ async def delete_session(session_id: str, request: Request):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str] = Cookie(default=None)):
     """웹소켓 연결 (세션별)"""
-    # 세션 가져오기
-    session = await session_manager.get_or_create_session(z_image_session)
+    # 세션 가져오기 - 클라이언트 IP 기반
+    client_host = websocket.client.host if websocket.client else None
+    session = await session_manager.get_or_create_session(z_image_session, client_host)
     
     await ws_manager.connect(websocket, session.session_id)
     update_activity()
