@@ -68,11 +68,16 @@
                                         <option value="BF16 (기본, 최고품질)">BF16 (기본)</option>
                                     </select>
                                 </div>
-                                <label class="cpu-offload-label" title="VRAM이 부족할 때 체크하세요. RAM을 사용하여 VRAM 사용량을 줄입니다.">
-                                    <input type="checkbox" id="chatCpuOffloadCheck">
-                                    <span>CPU 오프로딩</span>
-                                    <span class="tooltip-icon" data-tooltip="VRAM이 부족할 때 사용하세요. 모델 일부를 RAM에 올려 VRAM 사용량을 줄입니다. 속도는 약간 느려질 수 있습니다.">?</span>
-                                </label>
+                                <div class="chat-model-select">
+                                    <select id="chatGpuSelect" title="GPU 선택">
+                                        <option value="auto">GPU 자동</option>
+                                    </select>
+                                </div>
+                                <div class="chat-model-select">
+                                    <select id="chatMemOptSelect" title="메모리 최적화">
+                                        <option value="none">최적화 없음</option>
+                                    </select>
+                                </div>
                             </div>
                             <div class="model-actions">
                                 <button class="btn btn-sm btn-primary" id="btnChatLoadModel" title="모델 로드">
@@ -258,10 +263,45 @@
                         <label>모델 경로 (선택)</label>
                         <input type="text" id="modelPathInput" placeholder="비워두면 기본 경로">
                     </div>
+                    
+                    <!-- GPU 상태 표시 -->
+                    <div class="setting-group gpu-status-group" id="gpuStatusGroup">
+                        <label>🖥️ GPU 상태</label>
+                        <div class="gpu-status-container" id="gpuStatusContainer">
+                            <div class="gpu-status-loading">GPU 정보 로딩 중...</div>
+                        </div>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>GPU 선택</label>
+                        <select id="gpuSelect">
+                            <option value="auto">자동 선택 (가장 여유로운 GPU)</option>
+                            <option value="cuda:0">GPU 0</option>
+                            <option value="cuda:1">GPU 1</option>
+                            <option value="cuda:2">GPU 2</option>
+                            <option value="cuda:3">GPU 3</option>
+                            <option value="multi">다중 GPU (모델 분산)</option>
+                        </select>
+                        <small class="setting-hint">여러 GPU가 있는 경우 특정 GPU를 선택하거나 다중 GPU 모드를 사용할 수 있습니다.</small>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>메모리 최적화</label>
+                        <select id="memoryOptSelect">
+                            <option value="none">없음 (최대 성능)</option>
+                            <option value="attention_slicing">Attention Slicing (중간 메모리 절약)</option>
+                            <option value="vae_tiling">VAE Tiling (고해상도 지원)</option>
+                            <option value="model_cpu_offload">Model CPU Offload (균형)</option>
+                            <option value="sequential_cpu_offload">Sequential CPU Offload (최대 절약, 느림)</option>
+                            <option value="all">모든 최적화 적용</option>
+                        </select>
+                        <small class="setting-hint">고해상도(1024x1024 이상) 생성 시 메모리 부족 오류가 발생하면 VAE Tiling 또는 "모든 최적화"를 선택하세요.</small>
+                    </div>
+                    
                     <div class="setting-group">
                         <label>
                             <input type="checkbox" id="cpuOffloadCheck">
-                            CPU 오프로딩 (VRAM 부족 시)
+                            CPU 오프로딩 (레거시, 위 최적화 옵션 사용 권장)
                         </label>
                     </div>
                     <div class="setting-actions">

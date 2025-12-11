@@ -564,19 +564,35 @@ async function loadModel(fromChat = false) {
     const modelPath = document.getElementById('modelPathInput')?.value || '';
     
     const cpuOffload = fromChat 
-        ? document.getElementById('chatCpuOffloadCheck')?.checked || false
+        ? false  // 대화탭에서는 메모리 최적화 옵션 사용
         : document.getElementById('cpuOffloadCheck')?.checked || false;
+    
+    // GPU 선택
+    const gpuSelection = fromChat
+        ? document.getElementById('chatGpuSelect')?.value || 'auto'
+        : document.getElementById('gpuSelect')?.value || 'auto';
+    
+    // 메모리 최적화
+    const memoryOptimization = fromChat
+        ? document.getElementById('chatMemOptSelect')?.value || 'none'
+        : document.getElementById('memoryOptSelect')?.value || 'none';
     
     try {
         setModelLoadingState(true);
-        const offloadMsg = cpuOffload ? ' (CPU 오프로딩 사용)' : '';
-        addMessage('system', `🔄 모델 로딩을 시작합니다...${offloadMsg}`);
+        
+        // 로딩 메시지 생성
+        const gpuMsg = gpuSelection === 'auto' ? 'GPU 자동' : 
+                       gpuSelection === 'multi' ? '다중 GPU' : gpuSelection;
+        const memOptMsg = memoryOptimization === 'none' ? '' : ` + ${memoryOptimization}`;
+        addMessage('system', `🔄 모델 로딩을 시작합니다... (${gpuMsg}${memOptMsg})`);
         showProgress('모델 로딩 준비 중...', 5);
         
         await apiCall('/model/load', 'POST', {
             quantization,
             model_path: modelPath,
-            cpu_offload: cpuOffload
+            cpu_offload: cpuOffload,
+            gpu_selection: gpuSelection,
+            memory_optimization: memoryOptimization
         });
         
         updateModelStatus();
@@ -584,6 +600,9 @@ async function loadModel(fromChat = false) {
         setTimeout(hideProgress, 1500);
         
         updateModelDownloadStatus();
+        
+        // GPU 상태 새로고침
+        setTimeout(refreshGpuStatus, 1000);
     } catch (error) {
         addMessage('system', `❌ 모델 로드 실패: ${error.message}`, 'error');
         hideProgress();
@@ -1025,6 +1044,21 @@ async function loadQuantizationOptions() {
             updateModelDownloadStatus();
         }
         
+        // GPU 옵션 로드
+        if (result.gpu_options) {
+            loadGpuOptions(result.gpu_options, result.gpus || []);
+        }
+        
+        // 메모리 최적화 옵션 로드
+        if (result.memory_optimization_options) {
+            loadMemoryOptOptions(result.memory_optimization_options);
+        }
+        
+        // GPU 상태 표시
+        if (result.gpus && result.gpus.length > 0) {
+            updateGpuStatusDisplay(result.gpus);
+        }
+        
         // 관리자 상태 업데이트
         if (result.is_admin !== undefined) {
             isAdmin = result.is_admin;
@@ -1032,6 +1066,126 @@ async function loadQuantizationOptions() {
         }
     } catch (error) {
         console.error('양자화 옵션 로드 실패:', error);
+    }
+}
+
+// ============= GPU 옵션 로드 =============
+function loadGpuOptions(gpuOptions, gpuList) {
+    const settingsSelect = document.getElementById('gpuSelect');
+    const chatSelect = document.getElementById('chatGpuSelect');
+    
+    [settingsSelect, chatSelect].forEach(select => {
+        if (!select) return;
+        select.innerHTML = '';
+        
+        // 자동 선택 옵션
+        const autoOpt = document.createElement('option');
+        autoOpt.value = 'auto';
+        autoOpt.textContent = select === chatSelect ? 'GPU 자동' : '자동 선택 (가장 여유로운 GPU)';
+        select.appendChild(autoOpt);
+        
+        // 각 GPU 옵션
+        gpuList.forEach(gpu => {
+            const opt = document.createElement('option');
+            opt.value = `cuda:${gpu.index}`;
+            const freePercent = Math.round((gpu.free_gb / gpu.total_gb) * 100);
+            if (select === chatSelect) {
+                opt.textContent = `GPU${gpu.index} (${freePercent}% 여유)`;
+            } else {
+                opt.textContent = `GPU ${gpu.index}: ${gpu.name} (${gpu.free_gb.toFixed(1)}/${gpu.total_gb.toFixed(1)}GB 여유)`;
+            }
+            opt.title = `${gpu.name} - ${gpu.free_gb.toFixed(1)}GB 여유 / ${gpu.total_gb.toFixed(1)}GB 전체`;
+            select.appendChild(opt);
+        });
+        
+        // 다중 GPU 옵션 (GPU가 2개 이상일 때만)
+        if (gpuList.length >= 2) {
+            const multiOpt = document.createElement('option');
+            multiOpt.value = 'multi';
+            multiOpt.textContent = select === chatSelect ? '다중 GPU' : `다중 GPU (${gpuList.length}개 분산)`;
+            select.appendChild(multiOpt);
+        }
+    });
+    
+    console.log('GPU 옵션 로드 완료:', gpuList.length + '개');
+}
+
+// ============= 메모리 최적화 옵션 로드 =============
+function loadMemoryOptOptions(memOptOptions) {
+    const settingsSelect = document.getElementById('memoryOptSelect');
+    const chatSelect = document.getElementById('chatMemOptSelect');
+    
+    [settingsSelect, chatSelect].forEach(select => {
+        if (!select) return;
+        select.innerHTML = '';
+        
+        for (const [key, label] of Object.entries(memOptOptions)) {
+            const opt = document.createElement('option');
+            opt.value = key;
+            if (select === chatSelect) {
+                // 대화탭은 짧은 이름
+                const shortLabels = {
+                    'none': '최적화 없음',
+                    'attention_slicing': 'Attention',
+                    'vae_tiling': 'VAE Tiling',
+                    'model_cpu_offload': 'CPU Offload',
+                    'sequential_cpu_offload': 'Seq Offload',
+                    'all': '모든 최적화'
+                };
+                opt.textContent = shortLabels[key] || label;
+            } else {
+                opt.textContent = label;
+            }
+            opt.title = label;
+            select.appendChild(opt);
+        }
+    });
+    
+    console.log('메모리 최적화 옵션 로드 완료');
+}
+
+// ============= GPU 상태 표시 업데이트 =============
+function updateGpuStatusDisplay(gpus) {
+    const container = document.getElementById('gpuStatusContainer');
+    if (!container) return;
+    
+    if (!gpus || gpus.length === 0) {
+        container.innerHTML = '<div class="gpu-status-item no-gpu">GPU를 찾을 수 없습니다.</div>';
+        return;
+    }
+    
+    container.innerHTML = gpus.map(gpu => {
+        const usagePercent = gpu.usage_percent || 0;
+        const barColor = usagePercent > 90 ? 'var(--danger)' : 
+                         usagePercent > 70 ? 'var(--warning)' : 'var(--success)';
+        
+        return `
+            <div class="gpu-status-item">
+                <div class="gpu-status-header">
+                    <span class="gpu-name">GPU ${gpu.index}: ${gpu.name}</span>
+                    <span class="gpu-usage">${gpu.used_gb.toFixed(1)} / ${gpu.total_gb.toFixed(1)} GB</span>
+                </div>
+                <div class="gpu-status-bar">
+                    <div class="gpu-status-fill" style="width: ${usagePercent}%; background: ${barColor};"></div>
+                </div>
+                <div class="gpu-status-info">
+                    <span class="gpu-free">${gpu.free_gb.toFixed(1)} GB 여유</span>
+                    <span class="gpu-percent">${usagePercent}% 사용</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// GPU 상태 주기적 업데이트
+async function refreshGpuStatus() {
+    try {
+        const status = await apiCall('/status');
+        if (status.gpus && status.gpus.length > 0) {
+            updateGpuStatusDisplay(status.gpus);
+        }
+    } catch (error) {
+        console.error('GPU 상태 업데이트 실패:', error);
     }
 }
 
@@ -1736,6 +1890,33 @@ document.addEventListener('DOMContentLoaded', () => {
             chatQuantSelect.value = e.target.value;
         });
     }
+    
+    // GPU 선택 드롭다운 동기화
+    const chatGpuSelect = document.getElementById('chatGpuSelect');
+    const settingsGpuSelect = document.getElementById('gpuSelect');
+    if (chatGpuSelect && settingsGpuSelect) {
+        chatGpuSelect.addEventListener('change', (e) => {
+            settingsGpuSelect.value = e.target.value;
+        });
+        settingsGpuSelect.addEventListener('change', (e) => {
+            chatGpuSelect.value = e.target.value;
+        });
+    }
+    
+    // 메모리 최적화 드롭다운 동기화
+    const chatMemOptSelect = document.getElementById('chatMemOptSelect');
+    const settingsMemOptSelect = document.getElementById('memoryOptSelect');
+    if (chatMemOptSelect && settingsMemOptSelect) {
+        chatMemOptSelect.addEventListener('change', (e) => {
+            settingsMemOptSelect.value = e.target.value;
+        });
+        settingsMemOptSelect.addEventListener('change', (e) => {
+            chatMemOptSelect.value = e.target.value;
+        });
+    }
+    
+    // GPU 상태 주기적 업데이트 (30초마다)
+    setInterval(refreshGpuStatus, 30000);
     
     // 커스텀 해상도 토글
     document.getElementById('resolutionSelect').addEventListener('change', (e) => {

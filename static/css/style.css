@@ -1623,3 +1623,109 @@ body {
     cursor: not-allowed;
     background: var(--bg-tertiary);
 }
+
+/* ============= GPU 상태 표시 ============= */
+.gpu-status-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    max-width: 500px;
+}
+
+.gpu-status-loading {
+    color: var(--text-muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 8px;
+}
+
+.gpu-status-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gpu-status-item.no-gpu {
+    color: var(--warning);
+    font-size: 13px;
+    padding: 8px;
+}
+
+.gpu-status-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.gpu-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.gpu-usage {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: monospace;
+}
+
+.gpu-status-bar {
+    height: 8px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.gpu-status-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease, background 0.3s ease;
+}
+
+.gpu-status-info {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.gpu-free {
+    color: var(--success);
+}
+
+.gpu-percent {
+    color: var(--text-secondary);
+}
+
+/* GPU 선택 드롭다운 (대화탭) */
+.chat-model-select + .chat-model-select {
+    margin-left: 4px;
+}
+
+.chat-model-select select {
+    max-width: 110px;
+}
+
+/* GPU 다중 선택 시 강조 */
+.chat-model-select select option[value="multi"] {
+    color: var(--accent);
+    font-weight: 500;
+}
+
+/* 메모리 최적화 - 권장 옵션 강조 */
+#memoryOptSelect option[value="vae_tiling"],
+#memoryOptSelect option[value="all"],
+#chatMemOptSelect option[value="vae_tiling"],
+#chatMemOptSelect option[value="all"] {
+    color: var(--success);
+}
+
+/* GPU 상태 그룹 */
+.gpu-status-group {
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+}
