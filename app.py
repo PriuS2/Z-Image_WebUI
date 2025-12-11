@@ -531,17 +531,23 @@ async def generate_image(request: GenerateRequest):
                 "type": "progress",
                 "content": f"🎨 이미지 생성 중... ({i+1}/{request.num_images})"
             })
+            # 메시지가 실제로 전송될 수 있도록 대기
+            await asyncio.sleep(0.05)
             
             generator = torch.Generator(device).manual_seed(current_seed)
             
-            image = pipe(
-                prompt=final_prompt,
-                height=request.height,
-                width=request.width,
-                num_inference_steps=request.steps,
-                guidance_scale=request.guidance_scale,
-                generator=generator,
-            ).images[0]
+            # 동기 pipe 호출을 스레드에서 실행하여 이벤트 루프 블로킹 방지
+            def run_pipe():
+                return pipe(
+                    prompt=final_prompt,
+                    height=request.height,
+                    width=request.width,
+                    num_inference_steps=request.steps,
+                    guidance_scale=request.guidance_scale,
+                    generator=generator,
+                ).images[0]
+            
+            image = await asyncio.to_thread(run_pipe)
             
             # 메타데이터 생성 및 저장
             metadata = ImageMetadata.create_metadata(
