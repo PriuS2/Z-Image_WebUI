@@ -53,6 +53,10 @@ function handleWebSocketMessage(data) {
             addMessage('system', data.content);
             updateProgressFromMessage(data.content);
             break;
+        case 'image_progress':
+            // 이미지 생성 프로그레스 (메시지 없이 프로그레스 바만 업데이트)
+            showProgress(`이미지 생성 중... (${data.current}/${data.total})`, data.progress);
+            break;
         case 'model_progress':
             // 모델 다운로드/로드 프로그레스 전용
             updateModelProgress(data.progress, data.label, data.detail, data.stage || '');

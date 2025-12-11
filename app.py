@@ -524,12 +524,22 @@ async def generate_image(request: GenerateRequest):
         # 시드 설정
         seed = request.seed if request.seed != -1 else random.randint(0, 2147483647)
         
+        # 생성 시작 메시지 (한 번만)
+        await manager.broadcast({
+            "type": "system",
+            "content": "🎨 이미지 생성 중..."
+        })
+        
         images = []
         for i in range(request.num_images):
             current_seed = seed + i
+            # 프로그레스 바 업데이트 (메시지 없이 진행률만)
+            percent = ((i) / request.num_images) * 100
             await manager.broadcast({
-                "type": "progress",
-                "content": f"🎨 이미지 생성 중... ({i+1}/{request.num_images})"
+                "type": "image_progress",
+                "progress": percent,
+                "current": i + 1,
+                "total": request.num_images
             })
             # 메시지가 실제로 전송될 수 있도록 대기
             await asyncio.sleep(0.05)
