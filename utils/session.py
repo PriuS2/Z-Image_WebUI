@@ -5,6 +5,8 @@ import re
 import time
 import shutil
 import json
+import socket
+import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
@@ -12,6 +14,21 @@ from datetime import datetime
 import asyncio
 
 from config.defaults import DATA_DIR, OUTPUTS_DIR
+
+
+def get_computer_id() -> str:
+    """
+    컴퓨터 이름 기반 고유 ID 생성
+    같은 컴퓨터에서는 항상 동일한 ID 반환
+    """
+    hostname = socket.gethostname()
+    # 컴퓨터 이름을 안전한 형식으로 변환 (알파벳, 숫자, 하이픈, 언더스코어만 허용)
+    safe_hostname = re.sub(r'[^a-zA-Z0-9_-]', '_', hostname)
+    # 너무 긴 경우 해시 추가
+    if len(safe_hostname) > 50:
+        hash_suffix = hashlib.md5(hostname.encode()).hexdigest()[:8]
+        safe_hostname = safe_hostname[:41] + "_" + hash_suffix
+    return safe_hostname
 
 
 # 세션 데이터 디렉토리
@@ -136,7 +153,10 @@ class SessionManager:
     COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30일
     RATE_LIMIT_PER_MINUTE = 10  # 분당 최대 요청 수
     
-    # UUID 형식 검증용 정규식 (디렉토리 트래버설 방지)
+    # 세션 ID 형식 검증용 정규식 (디렉토리 트래버설 방지)
+    # 컴퓨터 이름 기반 ID: 알파벳, 숫자, 하이픈, 언더스코어만 허용
+    SESSION_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+    # 기존 UUID 형식도 호환성을 위해 허용
     UUID_PATTERN = re.compile(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
         re.IGNORECASE
@@ -156,7 +176,7 @@ class SessionManager:
         """기존 세션 디렉토리에서 세션 복원"""
         if SESSIONS_DIR.exists():
             for session_dir in SESSIONS_DIR.iterdir():
-                if session_dir.is_dir() and self.UUID_PATTERN.match(session_dir.name):
+                if session_dir.is_dir() and self.validate_session_id(session_dir.name):
                     session_id = session_dir.name
                     # 마지막 수정 시간을 last_activity로 사용
                     try:
@@ -173,33 +193,36 @@ class SessionManager:
         """세션 ID 유효성 검증 (보안: 디렉토리 트래버설 방지)"""
         if not session_id:
             return False
-        return bool(self.UUID_PATTERN.match(session_id))
+        # 컴퓨터 이름 형식 또는 기존 UUID 형식 모두 허용 (호환성)
+        return bool(self.SESSION_ID_PATTERN.match(session_id) or self.UUID_PATTERN.match(session_id))
     
     def generate_session_id(self) -> str:
-        """새 세션 ID 생성"""
-        return str(uuid.uuid4())
+        """새 세션 ID 생성 - 컴퓨터 이름 기반"""
+        return get_computer_id()
     
     async def get_or_create_session(self, session_id: Optional[str] = None) -> SessionInfo:
-        """세션 가져오기 또는 생성"""
+        """세션 가져오기 또는 생성 - 컴퓨터 이름 기반"""
         async with self._lock:
-            # 유효한 세션 ID가 있으면 기존 세션 반환
-            if session_id and self.validate_session_id(session_id):
-                if session_id in self._sessions:
-                    session = self._sessions[session_id]
-                    session.update_activity()
-                    return session
-                else:
-                    # 디렉토리가 있으면 세션 복원
-                    session_dir = SESSIONS_DIR / session_id
-                    if session_dir.exists():
-                        session = SessionInfo(session_id=session_id)
-                        self._sessions[session_id] = session
-                        return session
+            # 컴퓨터 이름 기반 ID 사용 (같은 컴퓨터면 항상 동일)
+            computer_id = get_computer_id()
             
-            # 새 세션 생성
-            new_id = self.generate_session_id()
-            session = SessionInfo(session_id=new_id)
-            self._sessions[new_id] = session
+            # 기존 컴퓨터 ID 세션이 있으면 사용
+            if computer_id in self._sessions:
+                session = self._sessions[computer_id]
+                session.update_activity()
+                return session
+            
+            # 디렉토리가 있으면 세션 복원
+            session_dir = SESSIONS_DIR / computer_id
+            if session_dir.exists():
+                session = SessionInfo(session_id=computer_id)
+                self._sessions[computer_id] = session
+                session.update_activity()
+                return session
+            
+            # 새 세션 생성 (컴퓨터 이름 기반)
+            session = SessionInfo(session_id=computer_id)
+            self._sessions[computer_id] = session
             
             # 디렉토리 생성
             session.get_data_dir()
