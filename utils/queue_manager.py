@@ -309,3 +309,4 @@ class GenerationQueueManager:
 # 전역 인스턴스
 generation_queue = GenerationQueueManager()
 
+

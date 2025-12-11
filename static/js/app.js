@@ -711,13 +711,30 @@ function updateAdminUI() {
     const adminNotice = document.getElementById('adminNotice');
     const llmSettingsSection = document.getElementById('llmSettingsSection');
     const sessionManagementSection = document.getElementById('sessionManagementSection');
+    const systemPromptsSection = document.getElementById('systemPromptsSection');
+    const autoUnloadSection = document.getElementById('autoUnloadSection');
+    
+    // 시스템 프롬프트는 개인화되므로 항상 활성화
+    if (systemPromptsSection) {
+        systemPromptsSection.querySelectorAll('input, select, textarea, button').forEach(el => {
+            el.disabled = false;
+            el.style.display = '';
+        });
+    }
     
     if (isAdmin) {
-        // 관리자: 설정 변경 가능
+        // 관리자: LLM 설정 및 자동 언로드 설정 변경 가능
         if (adminNotice) adminNotice.style.display = 'none';
         if (llmSettingsSection) {
             llmSettingsSection.querySelectorAll('input, select, button').forEach(el => {
                 el.disabled = false;
+                el.style.display = '';
+            });
+        }
+        if (autoUnloadSection) {
+            autoUnloadSection.querySelectorAll('input, button').forEach(el => {
+                el.disabled = false;
+                el.style.display = '';
             });
         }
         if (sessionManagementSection) {
@@ -725,13 +742,21 @@ function updateAdminUI() {
             loadSessionList();
         }
     } else {
-        // 일반 사용자: 설정 읽기 전용
+        // 일반 사용자: LLM 설정 및 자동 언로드 설정 읽기 전용
         if (adminNotice) adminNotice.style.display = 'block';
         if (llmSettingsSection) {
             llmSettingsSection.querySelectorAll('input, select').forEach(el => {
                 el.disabled = true;
             });
             llmSettingsSection.querySelectorAll('button').forEach(el => {
+                el.style.display = 'none';
+            });
+        }
+        if (autoUnloadSection) {
+            autoUnloadSection.querySelectorAll('input').forEach(el => {
+                el.disabled = true;
+            });
+            autoUnloadSection.querySelectorAll('button').forEach(el => {
                 el.style.display = 'none';
             });
         }
@@ -1482,6 +1507,11 @@ async function saveApiKey() {
 }
 
 async function saveAutoUnloadSettings() {
+    if (!isAdmin) {
+        addMessage('system', '❌ 자동 언로드 설정은 관리자만 변경할 수 있습니다.', 'error');
+        return;
+    }
+    
     const enabled = document.getElementById('autoUnloadEnabledCheck')?.checked ?? true;
     const timeout = parseInt(document.getElementById('autoUnloadTimeoutInput')?.value) || 10;
     
@@ -1522,37 +1552,53 @@ async function loadAutoUnloadSettings() {
 }
 
 async function saveSystemPrompts() {
-    if (!isAdmin) {
-        addMessage('system', '❌ 설정 변경은 관리자만 가능합니다.', 'error');
-        return;
-    }
-    
+    // 시스템 프롬프트는 세션별 개인화 - 모든 사용자 저장 가능
     const translatePrompt = document.getElementById('translateSystemPrompt')?.value || '';
     const enhancePrompt = document.getElementById('enhanceSystemPrompt')?.value || '';
     
     try {
-        await apiCall('/settings', 'POST', {
+        await apiCall('/settings/prompts', 'POST', {
             translate_system_prompt: translatePrompt,
             enhance_system_prompt: enhancePrompt
         });
-        addMessage('system', '✅ 시스템 프롬프트 저장됨');
+        addMessage('system', '✅ 시스템 프롬프트 저장됨 (내 설정)');
     } catch (error) {
         addMessage('system', `❌ 저장 실패: ${error.message}`, 'error');
     }
 }
 
-function resetTranslatePrompt() {
+async function resetTranslatePrompt() {
     const translatePromptInput = document.getElementById('translateSystemPrompt');
     if (translatePromptInput && defaultTranslatePrompt) {
         translatePromptInput.value = defaultTranslatePrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                translate_system_prompt: ''  // 빈 문자열로 저장하면 기본값 사용
+            });
+        } catch (error) {
+            console.error('번역 프롬프트 초기화 실패:', error);
+        }
+        
         addMessage('system', '✅ 번역 시스템 프롬프트가 기본값으로 초기화되었습니다.');
     }
 }
 
-function resetEnhancePrompt() {
+async function resetEnhancePrompt() {
     const enhancePromptInput = document.getElementById('enhanceSystemPrompt');
     if (enhancePromptInput && defaultEnhancePrompt) {
         enhancePromptInput.value = defaultEnhancePrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                enhance_system_prompt: ''  // 빈 문자열로 저장하면 기본값 사용
+            });
+        } catch (error) {
+            console.error('향상 프롬프트 초기화 실패:', error);
+        }
+        
         addMessage('system', '✅ 향상 시스템 프롬프트가 기본값으로 초기화되었습니다.');
     }
 }

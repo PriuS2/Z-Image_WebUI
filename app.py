@@ -1148,8 +1148,17 @@ async def get_settings(request: Request):
     from utils.translator import Translator
     from utils.prompt_enhancer import PromptEnhancer
     
+    session = await get_session_from_request(request)
     client_host = request.client.host if request.client else None
     is_admin = is_localhost(client_host)
+    
+    # 세션별 시스템 프롬프트 (개인화)
+    session_translate_prompt = session.get_setting("translate_system_prompt")
+    session_enhance_prompt = session.get_setting("enhance_system_prompt")
+    
+    # 세션에 설정이 없으면 전역 설정 사용, 전역도 없으면 기본값
+    translate_prompt = session_translate_prompt or settings.get("translate_system_prompt") or Translator.DEFAULT_SYSTEM_PROMPT
+    enhance_prompt = session_enhance_prompt or settings.get("enhance_system_prompt") or PromptEnhancer.DEFAULT_SYSTEM_PROMPT
     
     return {
         # 관리자 여부
@@ -1170,9 +1179,9 @@ async def get_settings(request: Request):
             }
             for pid, pinfo in LLM_PROVIDERS.items()
         },
-        # 시스템 프롬프트
-        "translate_system_prompt": settings.get("translate_system_prompt") or Translator.DEFAULT_SYSTEM_PROMPT,
-        "enhance_system_prompt": settings.get("enhance_system_prompt") or PromptEnhancer.DEFAULT_SYSTEM_PROMPT,
+        # 시스템 프롬프트 (세션별 개인화)
+        "translate_system_prompt": translate_prompt,
+        "enhance_system_prompt": enhance_prompt,
         "default_translate_system_prompt": Translator.DEFAULT_SYSTEM_PROMPT,
         "default_enhance_system_prompt": PromptEnhancer.DEFAULT_SYSTEM_PROMPT,
         # 기타 설정
@@ -1184,6 +1193,56 @@ async def get_settings(request: Request):
         "auto_unload_enabled": settings.get("auto_unload_enabled", True),
         "auto_unload_timeout": settings.get("auto_unload_timeout", 10),
     }
+
+
+# ============= 세션별 시스템 프롬프트 API =============
+class SystemPromptsRequest(BaseModel):
+    translate_system_prompt: Optional[str] = None
+    enhance_system_prompt: Optional[str] = None
+
+
+@app.post("/api/settings/prompts")
+async def save_session_prompts(request: Request, prompts_request: SystemPromptsRequest):
+    """시스템 프롬프트 저장 (세션별 개인화, 모든 사용자 접근 가능)"""
+    session = await get_session_from_request(request)
+    session_settings = session.get_settings()
+    
+    if prompts_request.translate_system_prompt is not None:
+        if prompts_request.translate_system_prompt == '':
+            # 빈 문자열이면 설정 삭제 (기본값 사용)
+            session_settings.pop("translate_system_prompt", None)
+        else:
+            session_settings["translate_system_prompt"] = prompts_request.translate_system_prompt
+    
+    if prompts_request.enhance_system_prompt is not None:
+        if prompts_request.enhance_system_prompt == '':
+            # 빈 문자열이면 설정 삭제 (기본값 사용)
+            session_settings.pop("enhance_system_prompt", None)
+        else:
+            session_settings["enhance_system_prompt"] = prompts_request.enhance_system_prompt
+    
+    session.save_settings(session_settings)
+    
+    response = JSONResponse(content={"success": True})
+    set_session_cookie(response, session)
+    return response
+
+
+@app.delete("/api/settings/prompts")
+async def reset_session_prompts(request: Request):
+    """시스템 프롬프트 초기화 (세션별 설정 삭제, 전역/기본값 사용)"""
+    session = await get_session_from_request(request)
+    
+    session_settings = session.get_settings()
+    if "translate_system_prompt" in session_settings:
+        del session_settings["translate_system_prompt"]
+    if "enhance_system_prompt" in session_settings:
+        del session_settings["enhance_system_prompt"]
+    session.save_settings(session_settings)
+    
+    response = JSONResponse(content={"success": True})
+    set_session_cookie(response, session)
+    return response
 
 
 # ============= 관리자 API (localhost 전용) =============

@@ -4,6 +4,7 @@ import uuid
 import re
 import time
 import shutil
+import json
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
@@ -89,6 +90,43 @@ class SessionInfo:
             return f"{total_size / (1024 * 1024):.1f} MB"
         else:
             return f"{total_size / (1024 * 1024 * 1024):.2f} GB"
+    
+    def get_settings_file(self) -> Path:
+        """세션별 설정 파일 경로"""
+        return self.get_data_dir() / "settings.json"
+    
+    def get_settings(self) -> Dict[str, Any]:
+        """세션별 설정 로드"""
+        settings_file = self.get_settings_file()
+        if settings_file.exists():
+            try:
+                with open(settings_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"세션 설정 로드 실패: {e}")
+        return {}
+    
+    def save_settings(self, settings: Dict[str, Any]) -> bool:
+        """세션별 설정 저장"""
+        settings_file = self.get_settings_file()
+        try:
+            with open(settings_file, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"세션 설정 저장 실패: {e}")
+            return False
+    
+    def get_setting(self, key: str, default: Any = None) -> Any:
+        """특정 설정값 가져오기"""
+        settings = self.get_settings()
+        return settings.get(key, default)
+    
+    def set_setting(self, key: str, value: Any) -> bool:
+        """특정 설정값 저장"""
+        settings = self.get_settings()
+        settings[key] = value
+        return self.save_settings(settings)
 
 
 class SessionManager:
@@ -267,4 +305,5 @@ def is_localhost(client_host: Optional[str]) -> bool:
     }
     
     return client_host in localhost_addresses
+
 
