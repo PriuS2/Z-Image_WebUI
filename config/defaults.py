@@ -1,19 +1,68 @@
 """Z-Image WebUI 기본 설정값"""
 
 import os
+import shutil
 from pathlib import Path
+from dotenv import load_dotenv
 
 # 기본 경로
 BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / "data"
-OUTPUTS_DIR = BASE_DIR / "outputs"
+
+# .env 기본 내용 (ASCII only for encoding safety)
+DEFAULT_ENV_CONTENT = """# ===== Z-Image WebUI Environment Settings =====
+
+# ===== Server Settings =====
+PORT=7860
+HOST=0.0.0.0
+RELOAD=false
+
+# ===== Model Settings =====
+DEFAULT_MODEL=Tongyi-MAI/Z-Image-Turbo
+GGUF_MODEL_REPO=jayn7/Z-Image-Turbo-GGUF
+
+# ===== Debug =====
+DEBUG=false
+"""
+
+def _ensure_env_file():
+    """
+    .env 파일이 없으면 자동 생성
+    - .env.example이 있으면 복사
+    - 없으면 기본값으로 생성
+    """
+    env_path = BASE_DIR / ".env"
+    env_example_path = BASE_DIR / ".env.example"
+    
+    if not env_path.exists():
+        if env_example_path.exists():
+            # .env.example 복사
+            shutil.copy(env_example_path, env_path)
+            print(f"📝 .env 파일 생성됨 (.env.example 복사)")
+        else:
+            # 기본값으로 생성
+            env_path.write_text(DEFAULT_ENV_CONTENT, encoding="utf-8")
+            print(f"📝 .env 파일 생성됨 (기본값)")
+
+# .env 파일 확인 및 생성
+_ensure_env_file()
+
+# .env 파일 로드
+load_dotenv(BASE_DIR / ".env")
+
+# ===== 서버 설정 (환경변수에서 로드) =====
+SERVER_HOST = os.getenv("HOST", "0.0.0.0")
+SERVER_PORT = int(os.getenv("PORT", "7860"))
+SERVER_RELOAD = os.getenv("RELOAD", "false").lower() == "true"
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
+# ===== 기본 경로 =====
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
+OUTPUTS_DIR = Path(os.getenv("OUTPUTS_DIR", str(BASE_DIR / "outputs")))
 MODELS_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 
-# 기본 모델 설정
-DEFAULT_MODEL = "Tongyi-MAI/Z-Image-Turbo"
-
-# GGUF 모델 저장소
-GGUF_MODEL_REPO = "jayn7/Z-Image-Turbo-GGUF"
+# ===== 모델 설정 =====
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "Tongyi-MAI/Z-Image-Turbo")
+GGUF_MODEL_REPO = os.getenv("GGUF_MODEL_REPO", "jayn7/Z-Image-Turbo-GGUF")
 
 # 모델 옵션 (BF16 전용 및 GGUF 양자화 옵션)
 QUANTIZATION_OPTIONS = {

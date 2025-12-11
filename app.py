@@ -34,6 +34,9 @@ from config.defaults import (
     QUANTIZATION_OPTIONS,
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
+    SERVER_HOST,
+    SERVER_PORT,
+    SERVER_RELOAD,
 )
 from config.templates import PROMPT_TEMPLATES
 from utils.settings import settings
@@ -1332,12 +1335,12 @@ if __name__ == "__main__":
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     
     print("🎨 Z-Image WebUI 시작...")
-    print("📍 http://localhost:7860")
+    print(f"📍 http://localhost:{SERVER_PORT}")
     print("🌐 다중 사용자 지원 활성화")
     
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=7860,
-        reload=False
+        host=SERVER_HOST,
+        port=SERVER_PORT,
+        reload=SERVER_RELOAD
     )
