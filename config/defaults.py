@@ -125,3 +125,23 @@ THEMES = {
     "라이트 모드": "light",
     "시스템 설정": "system",
 }
+
+# GPU 설정 (다중 GPU 지원)
+GPU_OPTIONS = {
+    "auto": "자동 선택 (가장 여유로운 GPU)",
+    "cuda:0": "GPU 0",
+    "cuda:1": "GPU 1",
+    "cuda:2": "GPU 2",
+    "cuda:3": "GPU 3",
+    "multi": "다중 GPU (모델 분산)",
+}
+
+# 메모리 최적화 옵션
+MEMORY_OPTIMIZATION = {
+    "none": "없음 (최대 성능)",
+    "attention_slicing": "Attention Slicing (중간 메모리 절약)",
+    "vae_tiling": "VAE Tiling (고해상도 지원)",
+    "sequential_cpu_offload": "Sequential CPU Offload (최대 메모리 절약)",
+    "model_cpu_offload": "Model CPU Offload (균형)",
+    "all": "모든 최적화 적용",
+}

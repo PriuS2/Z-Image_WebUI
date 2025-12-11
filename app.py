@@ -34,6 +34,8 @@ from config.defaults import (
     QUANTIZATION_OPTIONS,
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
+    GPU_OPTIONS,
+    MEMORY_OPTIMIZATION,
 )
 from config.templates import PROMPT_TEMPLATES
 from utils.settings import settings
@@ -181,6 +183,8 @@ class ModelLoadRequest(BaseModel):
     quantization: str = "BF16 (기본, 최고품질)"
     model_path: str = ""
     cpu_offload: bool = False
+    gpu_selection: str = "auto"  # auto, cuda:0, cuda:1, multi
+    memory_optimization: str = "none"  # none, attention_slicing, vae_tiling, all
 
 
 class SettingsRequest(BaseModel):
@@ -220,13 +224,67 @@ class ConversationUpdateRequest(BaseModel):
 
 
 # ============= 유틸리티 함수 =============
-def get_device():
-    """사용 가능한 디바이스 반환"""
+def get_available_gpus() -> list:
+    """사용 가능한 GPU 목록 반환"""
+    gpus = []
     if torch.cuda.is_available():
-        return "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            gpus.append({
+                "index": i,
+                "name": props.name,
+                "total_memory": props.total_memory / 1024**3,  # GB
+                "device": f"cuda:{i}"
+            })
+    return gpus
+
+
+def get_best_gpu() -> str:
+    """가장 여유로운 GPU 선택"""
+    if not torch.cuda.is_available():
+        return "cpu"
+    
+    gpus = get_available_gpus()
+    if not gpus:
+        return "cpu"
+    
+    if len(gpus) == 1:
+        return "cuda:0"
+    
+    # 각 GPU의 여유 메모리 확인
+    best_gpu = 0
+    max_free = 0
+    
+    for gpu in gpus:
+        idx = gpu["index"]
+        # 현재 GPU의 사용량 확인
+        torch.cuda.set_device(idx)
+        free_mem = gpu["total_memory"] - (torch.cuda.memory_allocated(idx) / 1024**3)
+        if free_mem > max_free:
+            max_free = free_mem
+            best_gpu = idx
+    
+    return f"cuda:{best_gpu}"
+
+
+def get_device(gpu_option: str = "auto"):
+    """사용할 디바이스 반환"""
+    if not torch.cuda.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    
+    if gpu_option == "auto":
+        return get_best_gpu()
+    elif gpu_option == "multi":
+        return "cuda"  # device_map으로 처리
+    elif gpu_option.startswith("cuda:"):
+        gpu_idx = int(gpu_option.split(":")[1])
+        if gpu_idx < torch.cuda.device_count():
+            return gpu_option
+        return get_best_gpu()
+    
+    return "cuda:0"
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -237,12 +295,44 @@ def image_to_base64(image: Image.Image) -> str:
 
 
 def get_vram_info() -> str:
-    """VRAM 사용량 정보"""
+    """VRAM 사용량 정보 (다중 GPU 지원)"""
     if torch.cuda.is_available():
-        vram_used = torch.cuda.memory_allocated() / 1024**3
-        vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        return f"{vram_used:.1f}GB / {vram_total:.1f}GB"
+        gpu_count = torch.cuda.device_count()
+        if gpu_count == 1:
+            vram_used = torch.cuda.memory_allocated(0) / 1024**3
+            vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            return f"{vram_used:.1f}GB / {vram_total:.1f}GB"
+        else:
+            # 다중 GPU: 각 GPU 정보 표시
+            infos = []
+            for i in range(gpu_count):
+                vram_used = torch.cuda.memory_allocated(i) / 1024**3
+                vram_total = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                infos.append(f"GPU{i}: {vram_used:.1f}/{vram_total:.1f}GB")
+            return " | ".join(infos)
     return "N/A"
+
+
+def get_gpu_info_detailed() -> list:
+    """각 GPU의 상세 정보 반환"""
+    if not torch.cuda.is_available():
+        return []
+    
+    gpus = []
+    for i in range(torch.cuda.device_count()):
+        props = torch.cuda.get_device_properties(i)
+        used = torch.cuda.memory_allocated(i) / 1024**3
+        total = props.total_memory / 1024**3
+        free = total - used
+        gpus.append({
+            "index": i,
+            "name": props.name,
+            "used_gb": round(used, 2),
+            "total_gb": round(total, 2),
+            "free_gb": round(free, 2),
+            "usage_percent": round((used / total) * 100, 1) if total > 0 else 0
+        })
+    return gpus
 
 
 async def get_session_from_request(request: Request) -> SessionInfo:
@@ -572,6 +662,8 @@ async def get_status(request: Request):
         "current_model": current_model,
         "device": device or get_device(),
         "vram": get_vram_info(),
+        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "gpus": get_gpu_info_detailed(),
         "is_generating": queue_status["is_processing"],
         "upscaler_available": REALESRGAN_AVAILABLE,
         "queue_length": queue_status["queue_length"],
@@ -591,7 +683,12 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
         raise HTTPException(409, "다른 사용자가 모델을 로드/언로드 중입니다. 잠시 후 다시 시도해주세요.")
     
     async with model_lock:
-        device = get_device()
+        # GPU 선택
+        gpu_selection = model_request.gpu_selection or "auto"
+        memory_opt = model_request.memory_optimization or "none"
+        use_multi_gpu = (gpu_selection == "multi")
+        
+        device = get_device(gpu_selection)
         quant_info = QUANTIZATION_OPTIONS.get(model_request.quantization)
         
         if not quant_info:
@@ -602,12 +699,29 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
         is_gguf = quant_info.get("is_gguf", False)
         
         try:
+            # GPU 정보 로깅
+            gpu_info = get_gpu_info_detailed()
+            gpu_desc = device
+            if gpu_info:
+                if use_multi_gpu:
+                    gpu_names = [f"GPU{g['index']}: {g['name']}" for g in gpu_info]
+                    gpu_desc = f"다중 GPU ({len(gpu_info)}개)"
+                    print(f"🖥️ 다중 GPU 모드: {', '.join(gpu_names)}")
+                else:
+                    gpu_idx = int(device.split(":")[1]) if ":" in device else 0
+                    if gpu_idx < len(gpu_info):
+                        gpu_desc = f"{device} ({gpu_info[gpu_idx]['name']})"
+            
+            # 메모리 최적화 설정 로깅
+            opt_desc = MEMORY_OPTIMIZATION.get(memory_opt, memory_opt)
+            print(f"⚙️ 메모리 최적화: {opt_desc}")
+            
             # 1단계: 로딩 준비
             await ws_manager.broadcast({
                 "type": "model_progress", 
                 "progress": 5, 
                 "label": "🔧 모델 초기화 중...",
-                "detail": f"양자화: {dtype}, 디바이스: {device}",
+                "detail": f"양자화: {dtype}, 디바이스: {gpu_desc}, 최적화: {opt_desc}",
                 "stage": "init"
             })
             await asyncio.sleep(0.1)
@@ -703,7 +817,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
                     **load_kwargs
                 )
             
-            # 5단계: 디바이스 전송
+            # 5단계: 디바이스 전송 및 최적화
             await ws_manager.broadcast({
                 "type": "model_progress", 
                 "progress": 75, 
@@ -713,17 +827,65 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             })
             await asyncio.sleep(0.1)
             
-            if model_request.cpu_offload:
+            # CPU 오프로드 옵션 (메모리 최적화보다 우선)
+            if model_request.cpu_offload or memory_opt == "model_cpu_offload":
                 await asyncio.to_thread(pipe.enable_model_cpu_offload)
                 await ws_manager.broadcast({
                     "type": "model_progress", 
-                    "progress": 95, 
-                    "label": "⚙️ CPU 오프로딩 설정 중...",
+                    "progress": 85, 
+                    "label": "⚙️ Model CPU Offload 설정 중...",
                     "detail": "VRAM 부족 시 자동으로 RAM 사용",
                     "stage": "cpu_offload"
                 })
+            elif memory_opt == "sequential_cpu_offload":
+                await asyncio.to_thread(pipe.enable_sequential_cpu_offload, gpu_id=int(device.split(":")[1]) if ":" in device else 0)
+                await ws_manager.broadcast({
+                    "type": "model_progress", 
+                    "progress": 85, 
+                    "label": "⚙️ Sequential CPU Offload 설정 중...",
+                    "detail": "최대 메모리 절약 모드 (느림)",
+                    "stage": "cpu_offload"
+                })
+            elif use_multi_gpu:
+                # 다중 GPU: device_map 사용
+                await ws_manager.broadcast({
+                    "type": "model_progress", 
+                    "progress": 80, 
+                    "label": "🖥️ 다중 GPU에 모델 분산 중...",
+                    "detail": f"{torch.cuda.device_count()}개 GPU 사용",
+                    "stage": "multi_gpu"
+                })
+                await asyncio.to_thread(pipe.enable_model_cpu_offload)
             else:
                 await asyncio.to_thread(pipe.to, device)
+            
+            # 메모리 최적화 적용
+            if memory_opt in ["attention_slicing", "all"]:
+                await ws_manager.broadcast({
+                    "type": "model_progress", 
+                    "progress": 90, 
+                    "label": "⚙️ Attention Slicing 활성화...",
+                    "detail": "메모리 사용량 감소",
+                    "stage": "optimization"
+                })
+                pipe.enable_attention_slicing("auto")
+            
+            if memory_opt in ["vae_tiling", "all"]:
+                await ws_manager.broadcast({
+                    "type": "model_progress", 
+                    "progress": 93, 
+                    "label": "⚙️ VAE Tiling 활성화...",
+                    "detail": "고해상도 이미지 지원",
+                    "stage": "optimization"
+                })
+                pipe.enable_vae_tiling()
+            
+            # xformers 메모리 효율적 attention 시도
+            try:
+                pipe.enable_xformers_memory_efficient_attention()
+                print("✅ xformers 메모리 효율적 attention 활성화")
+            except Exception:
+                pass  # xformers가 없으면 무시
             
             current_model = model_request.quantization
             
@@ -1192,6 +1354,11 @@ async def get_settings(request: Request):
         # 자동 언로드 설정
         "auto_unload_enabled": settings.get("auto_unload_enabled", True),
         "auto_unload_timeout": settings.get("auto_unload_timeout", 10),
+        # GPU 및 메모리 최적화 옵션
+        "gpu_options": GPU_OPTIONS,
+        "memory_optimization_options": MEMORY_OPTIMIZATION,
+        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "gpus": get_gpu_info_detailed(),
     }
 
 
