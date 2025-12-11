@@ -7,10 +7,12 @@ import asyncio
 import base64
 import random
 import gc
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from io import BytesIO
+from contextlib import asynccontextmanager
 
 # 프로젝트 루트를 path에 추가
 ROOT_DIR = Path(__file__).parent
@@ -43,8 +45,94 @@ from utils.favorites import favorites_manager
 from utils.upscaler import upscaler, REALESRGAN_AVAILABLE
 
 
+# ============= 자동 언로드 관련 함수 =============
+def update_activity():
+    """마지막 활동 시간 업데이트"""
+    global last_activity_time
+    last_activity_time = time.time()
+
+
+async def auto_unload_checker():
+    """백그라운드에서 자동 언로드 체크"""
+    global pipe, current_model, last_activity_time
+    
+    while True:
+        await asyncio.sleep(60)  # 1분마다 체크
+        
+        # 자동 언로드 설정 확인
+        if not settings.get("auto_unload_enabled", True):
+            continue
+        
+        # 모델이 로드되어 있지 않으면 스킵
+        if pipe is None:
+            continue
+        
+        # 생성 중이면 스킵
+        if is_generating:
+            update_activity()  # 생성 중에는 활동으로 간주
+            continue
+        
+        # 타임아웃 체크
+        timeout_minutes = settings.get("auto_unload_timeout", 10)
+        timeout_seconds = timeout_minutes * 60
+        elapsed = time.time() - last_activity_time
+        
+        if elapsed >= timeout_seconds:
+            print(f"⏰ 자동 언로드: {timeout_minutes}분 동안 활동이 없어 모델을 언로드합니다.")
+            
+            try:
+                # 모델 언로드
+                del pipe
+                pipe = None
+                current_model = None
+                
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                
+                gc.collect()
+                
+                # 클라이언트에게 알림
+                await manager.broadcast({
+                    "type": "system",
+                    "content": f"⏰ {timeout_minutes}분 동안 활동이 없어 모델이 자동 언로드되었습니다. VRAM을 절약합니다."
+                })
+                await manager.broadcast({
+                    "type": "model_progress", 
+                    "progress": 100, 
+                    "label": "⏰ 자동 언로드 완료",
+                    "detail": f"VRAM 사용량: {get_vram_info()}",
+                    "stage": "complete"
+                })
+                
+                print(f"✅ 자동 언로드 완료. VRAM: {get_vram_info()}")
+                
+            except Exception as e:
+                print(f"❌ 자동 언로드 실패: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """앱 시작/종료 시 실행되는 lifespan 핸들러"""
+    global auto_unload_task
+    
+    # 시작 시: 자동 언로드 체크 태스크 시작
+    auto_unload_task = asyncio.create_task(auto_unload_checker())
+    print("🔄 자동 언로드 체커 시작됨")
+    
+    yield
+    
+    # 종료 시: 태스크 취소
+    if auto_unload_task:
+        auto_unload_task.cancel()
+        try:
+            await auto_unload_task
+        except asyncio.CancelledError:
+            pass
+
+
 # ============= FastAPI 앱 설정 =============
-app = FastAPI(title="Z-Image WebUI", version="1.0.0")
+app = FastAPI(title="Z-Image WebUI", version="1.0.0", lifespan=lifespan)
 
 # 정적 파일 및 템플릿
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
@@ -57,6 +145,8 @@ pipe = None
 current_model = None
 device = None
 is_generating = False
+last_activity_time = time.time()  # 마지막 활동 시간
+auto_unload_task = None  # 자동 언로드 체크 태스크
 
 
 # ============= Pydantic 모델 =============
@@ -90,6 +180,9 @@ class SettingsRequest(BaseModel):
     # 시스템 프롬프트 (번역/향상)
     translate_system_prompt: Optional[str] = None
     enhance_system_prompt: Optional[str] = None
+    # 자동 언로드 설정
+    auto_unload_enabled: Optional[bool] = None
+    auto_unload_timeout: Optional[int] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -162,6 +255,7 @@ manager = ConnectionManager()
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """메인 페이지"""
+    update_activity()
     return templates.TemplateResponse("index.html", {"request": request})
 
 
@@ -169,6 +263,7 @@ async def home(request: Request):
 async def get_status():
     """시스템 상태"""
     global pipe, current_model, device
+    update_activity()  # 활동 시간 업데이트
     return {
         "model_loaded": pipe is not None,
         "current_model": current_model,
@@ -404,6 +499,7 @@ async def unload_model():
 async def generate_image(request: GenerateRequest):
     """이미지 생성"""
     global pipe, is_generating
+    update_activity()  # 활동 시간 업데이트
     
     if pipe is None:
         raise HTTPException(400, "모델이 로드되지 않았습니다.")
@@ -515,6 +611,7 @@ async def generate_preview(request: GenerateRequest):
 @app.post("/api/translate")
 async def translate_text(request: TranslateRequest):
     """프롬프트 번역 (한국어 → 영어)"""
+    update_activity()  # 활동 시간 업데이트
     from utils.llm_client import llm_client
     
     if not llm_client.is_available:
@@ -527,6 +624,7 @@ async def translate_text(request: TranslateRequest):
 @app.post("/api/translate-reverse")
 async def reverse_translate_text(request: TranslateRequest):
     """프롬프트 역번역 (영어 → 한국어)"""
+    update_activity()  # 활동 시간 업데이트
     from utils.llm_client import llm_client
     
     if not llm_client.is_available:
@@ -539,6 +637,7 @@ async def reverse_translate_text(request: TranslateRequest):
 @app.post("/api/enhance")
 async def enhance_prompt(request: EnhanceRequest):
     """프롬프트 향상"""
+    update_activity()  # 활동 시간 업데이트
     from utils.llm_client import llm_client
     
     if not llm_client.is_available:
@@ -720,6 +819,15 @@ async def save_settings(request: SettingsRequest):
     if request.enhance_system_prompt is not None:
         settings.set("enhance_system_prompt", request.enhance_system_prompt)
     
+    # 자동 언로드 설정
+    if request.auto_unload_enabled is not None:
+        settings.set("auto_unload_enabled", request.auto_unload_enabled)
+    
+    if request.auto_unload_timeout is not None:
+        # 최소 1분, 최대 1440분(24시간) 제한
+        timeout = max(1, min(1440, request.auto_unload_timeout))
+        settings.set("auto_unload_timeout", timeout)
+    
     return {"success": True}
 
 
@@ -757,6 +865,9 @@ async def get_settings():
         "filename_pattern": settings.get("filename_pattern", "{date}_{time}_{seed}"),
         "quantization_options": list(QUANTIZATION_OPTIONS.keys()),
         "resolution_presets": RESOLUTION_PRESETS,
+        # 자동 언로드 설정
+        "auto_unload_enabled": settings.get("auto_unload_enabled", True),
+        "auto_unload_timeout": settings.get("auto_unload_timeout", 10),
     }
 
 
@@ -765,6 +876,7 @@ async def get_settings():
 async def websocket_endpoint(websocket: WebSocket):
     """웹소켓 연결"""
     await manager.connect(websocket)
+    update_activity()  # 연결 시 활동 업데이트
     try:
         # 연결 시 상태 전송
         await websocket.send_json({
@@ -774,6 +886,7 @@ async def websocket_endpoint(websocket: WebSocket):
         
         while True:
             data = await websocket.receive_text()
+            update_activity()  # 메시지 수신 시 활동 업데이트
             # 클라이언트 메시지 처리 (필요시)
             
     except WebSocketDisconnect:

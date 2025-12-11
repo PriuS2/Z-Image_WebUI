@@ -261,6 +261,28 @@
                 </div>
                 
                 <div class="settings-section">
+                    <h3>⏰ 자동 언로드 설정</h3>
+                    <p class="setting-description">웹 접속이나 조작이 없으면 자동으로 모델을 언로드하여 VRAM을 절약합니다.</p>
+                    <div class="setting-group">
+                        <label>
+                            <input type="checkbox" id="autoUnloadEnabledCheck" checked>
+                            자동 언로드 활성화
+                        </label>
+                    </div>
+                    <div class="setting-group">
+                        <label>자동 언로드 시간 (분)</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="autoUnloadTimeoutInput" value="10" min="1" max="1440" step="1">
+                            <span class="unit">분</span>
+                        </div>
+                        <small class="setting-hint">설정한 시간 동안 활동이 없으면 모델이 자동으로 언로드됩니다. (1~1440분)</small>
+                    </div>
+                    <button class="btn btn-secondary" id="btnSaveAutoUnload">
+                        <i class="ri-save-line"></i> 자동 언로드 설정 저장
+                    </button>
+                </div>
+                
+                <div class="settings-section">
                     <h3>🔑 LLM API 설정 (번역/프롬프트 향상)</h3>
                     <div class="setting-group">
                         <label>LLM Provider</label>

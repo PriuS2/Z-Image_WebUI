@@ -1293,3 +1293,45 @@ body {
 #chatQuantizationSelect option[style*="color: rgb(34, 197, 94)"] {
     background: rgba(34, 197, 94, 0.1);
 }
+
+/* ============= 자동 언로드 설정 ============= */
+.input-with-unit {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.input-with-unit input {
+    width: 100px;
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+}
+
+.input-with-unit input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.input-with-unit .unit {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.setting-hint {
+    display: block;
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.setting-description {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin-bottom: 16px;
+    line-height: 1.5;
+}

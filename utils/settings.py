@@ -136,6 +136,10 @@ Rules:
 4. Output ONLY the enhanced prompt, no explanations
 5. Preserve any weight syntax like (word:1.5) if present""",
             
+            # 자동 언로드 설정
+            "auto_unload_enabled": True,  # 자동 언로드 활성화 여부
+            "auto_unload_timeout": 10,  # 자동 언로드 시간 (분)
+            
             # 기타
             "last_used": None,
         }

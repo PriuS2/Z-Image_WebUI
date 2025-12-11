@@ -1317,6 +1317,48 @@ async function saveApiKey() {
     }
 }
 
+// 자동 언로드 설정 저장
+async function saveAutoUnloadSettings() {
+    const enabled = document.getElementById('autoUnloadEnabledCheck')?.checked ?? true;
+    const timeout = parseInt(document.getElementById('autoUnloadTimeoutInput')?.value) || 10;
+    
+    try {
+        await apiCall('/settings', 'POST', {
+            auto_unload_enabled: enabled,
+            auto_unload_timeout: timeout
+        });
+        
+        const statusText = enabled ? `${timeout}분 후 자동 언로드` : '비활성화';
+        addMessage('system', `✅ 자동 언로드 설정 저장됨 (${statusText})`);
+    } catch (error) {
+        addMessage('system', `❌ 저장 실패: ${error.message}`, 'error');
+    }
+}
+
+// 자동 언로드 설정 로드
+async function loadAutoUnloadSettings() {
+    try {
+        const result = await apiCall('/settings');
+        
+        const enabledCheck = document.getElementById('autoUnloadEnabledCheck');
+        const timeoutInput = document.getElementById('autoUnloadTimeoutInput');
+        
+        if (enabledCheck) {
+            enabledCheck.checked = result.auto_unload_enabled ?? true;
+        }
+        if (timeoutInput) {
+            timeoutInput.value = result.auto_unload_timeout ?? 10;
+        }
+        
+        console.log('자동 언로드 설정 로드 완료:', {
+            enabled: result.auto_unload_enabled,
+            timeout: result.auto_unload_timeout
+        });
+    } catch (error) {
+        console.error('자동 언로드 설정 로드 실패:', error);
+    }
+}
+
 // 시스템 프롬프트 저장
 async function saveSystemPrompts() {
     const translatePrompt = document.getElementById('translateSystemPrompt')?.value || '';
@@ -1420,6 +1462,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadTemplates();
     loadQuantizationOptions();
     loadLlmProviders();
+    loadAutoUnloadSettings();
     
     // 탭 전환
     document.querySelectorAll('.nav-item').forEach(btn => {
@@ -1552,6 +1595,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnResetEnhancePrompt = document.getElementById('btnResetEnhancePrompt');
     if (btnResetEnhancePrompt) {
         btnResetEnhancePrompt.addEventListener('click', resetEnhancePrompt);
+    }
+    
+    // 자동 언로드 설정
+    const btnSaveAutoUnload = document.getElementById('btnSaveAutoUnload');
+    if (btnSaveAutoUnload) {
+        btnSaveAutoUnload.addEventListener('click', saveAutoUnloadSettings);
     }
     
     // 레거시 호환
