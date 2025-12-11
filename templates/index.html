@@ -43,6 +43,11 @@
                 <div class="status-indicator offline"></div>
                 <span>모델 미로드</span>
             </div>
+            
+            <div class="user-count" id="userCount" title="현재 접속자 수">
+                <i class="ri-user-line"></i>
+                <span id="userCountText">1</span>
+            </div>
         </aside>
         
         <!-- 메인 컨텐츠 -->
@@ -89,6 +94,15 @@
                                 <div class="progress-fill" id="progressFill" style="width: 0%"></div>
                             </div>
                             <div class="progress-detail" id="progressDetail"></div>
+                        </div>
+                        
+                        <!-- 큐 상태 표시 -->
+                        <div class="queue-status" id="queueStatus" style="display: none;">
+                            <div class="queue-status-icon">
+                                <i class="ri-time-line"></i>
+                            </div>
+                            <div class="queue-status-text" id="queueStatusText">대기 중...</div>
+                            <div class="queue-status-position" id="queueStatusPosition"></div>
                         </div>
                     </div>
                     
@@ -282,7 +296,15 @@
                     </button>
                 </div>
                 
-                <div class="settings-section">
+                <!-- 관리자 전용 안내 (외부 접속 시 표시) -->
+                <div class="settings-section admin-notice" id="adminNotice" style="display: none;">
+                    <div class="admin-notice-content">
+                        <i class="ri-lock-line"></i>
+                        <span>LLM API 설정은 관리자(localhost)만 변경할 수 있습니다.</span>
+                    </div>
+                </div>
+                
+                <div class="settings-section" id="llmSettingsSection">
                     <h3>🔑 LLM API 설정 (번역/프롬프트 향상)</h3>
                     <div class="setting-group">
                         <label>LLM Provider</label>
@@ -376,6 +398,24 @@
                             </a>
                         </div>
                     </div>
+                </div>
+                
+                <!-- 세션 관리 (관리자 전용) -->
+                <div class="settings-section" id="sessionManagementSection" style="display: none;">
+                    <h3>👥 세션 관리 (관리자 전용)</h3>
+                    <p class="setting-description">접속한 사용자들의 세션 데이터를 관리합니다.</p>
+                    <div class="session-list" id="sessionList">
+                        <div class="session-list-header">
+                            <span>세션 ID</span>
+                            <span>마지막 활동</span>
+                            <span>데이터 크기</span>
+                            <span>작업</span>
+                        </div>
+                        <!-- 동적으로 세션 목록이 추가됨 -->
+                    </div>
+                    <button class="btn btn-secondary" id="btnRefreshSessions">
+                        <i class="ri-refresh-line"></i> 새로고침
+                    </button>
                 </div>
                 
                 <div class="settings-section credits-section">
