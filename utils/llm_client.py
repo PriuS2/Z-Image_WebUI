@@ -3,6 +3,7 @@
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
+from config.defaults import LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
 from utils.settings import settings, LLM_PROVIDERS
 
 
@@ -14,21 +15,22 @@ class LLMClient:
         self._current_config: Dict[str, Any] = {}
     
     def _get_config(self) -> Dict[str, Any]:
-        """현재 설정에서 LLM 구성 가져오기"""
-        provider_id = settings.get("llm_provider", "openai")
+        """현재 설정에서 LLM 구성 가져오기 (환경변수 우선)"""
+        # 환경변수 우선, 없으면 settings.yaml 사용
+        provider_id = LLM_PROVIDER or settings.get("llm_provider", "openai")
         provider_info = LLM_PROVIDERS.get(provider_id, LLM_PROVIDERS["openai"])
         
-        # API 키: 새 설정 우선, 레거시 호환
-        api_key = settings.get("llm_api_key") or settings.get("openai_api_key", "")
+        # API 키: 환경변수 우선, 그 다음 settings
+        api_key = LLM_API_KEY or settings.get("llm_api_key") or settings.get("openai_api_key", "")
         
         # Base URL: 커스텀이면 설정값, 아니면 provider 기본값
         if provider_id == "custom":
-            base_url = settings.get("llm_base_url", "")
+            base_url = LLM_BASE_URL or settings.get("llm_base_url", "")
         else:
             base_url = provider_info["base_url"]
         
-        # 모델: 설정값 또는 provider 기본값
-        model = settings.get("llm_model") or provider_info["default_model"]
+        # 모델: 환경변수 우선, 그 다음 settings, 최후에 provider 기본값
+        model = LLM_MODEL or settings.get("llm_model") or provider_info["default_model"]
         
         return {
             "provider": provider_id,

@@ -20,6 +20,13 @@ RELOAD=false
 DEFAULT_MODEL=Tongyi-MAI/Z-Image-Turbo
 GGUF_MODEL_REPO=jayn7/Z-Image-Turbo-GGUF
 
+# ===== LLM Settings =====
+# Provider: openai, groq, openrouter, together, ollama, lmstudio, custom
+LLM_PROVIDER=openai
+LLM_API_KEY=
+LLM_MODEL=
+# LLM_BASE_URL=  # For custom provider only
+
 # ===== Debug =====
 DEBUG=false
 """
@@ -63,6 +70,12 @@ MODELS_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 # ===== 모델 설정 =====
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "Tongyi-MAI/Z-Image-Turbo")
 GGUF_MODEL_REPO = os.getenv("GGUF_MODEL_REPO", "jayn7/Z-Image-Turbo-GGUF")
+
+# ===== LLM 설정 (환경변수 우선) =====
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")  # 빈 문자열이면 settings.yaml 사용
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 
 # 모델 옵션 (BF16 전용 및 GGUF 양자화 옵션)
 QUANTIZATION_OPTIONS = {
