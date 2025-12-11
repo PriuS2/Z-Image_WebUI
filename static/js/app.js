@@ -1,4 +1,4 @@
-// Z-Image WebUI - JavaScript
+// Z-Image WebUI - JavaScript (다중 사용자 지원)
 
 // ============= 전역 변수 =============
 let ws = null;
@@ -6,7 +6,9 @@ let isGenerating = false;
 let isModelLoading = false;
 let templates = {};
 let isTranslating = false;
-let lastHistoryId = null;  // 마지막으로 저장된 히스토리 ID
+let lastHistoryId = null;
+let isAdmin = false;  // 관리자 여부
+let sessionId = null;  // 현재 세션 ID
 
 // ============= DOM 요소 =============
 const chatMessages = document.getElementById('chatMessages');
@@ -21,6 +23,8 @@ function connectWebSocket() {
     
     ws.onopen = () => {
         console.log('WebSocket 연결됨');
+        // 핑 전송 시작 (연결 유지)
+        startPing();
     };
     
     ws.onmessage = (event) => {
@@ -30,6 +34,7 @@ function connectWebSocket() {
     
     ws.onclose = () => {
         console.log('WebSocket 연결 끊김, 재연결 시도...');
+        stopPing();
         setTimeout(connectWebSocket, 3000);
     };
     
@@ -38,39 +43,186 @@ function connectWebSocket() {
     };
 }
 
+let pingInterval = null;
+
+function startPing() {
+    pingInterval = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+        }
+    }, 30000);  // 30초마다 핑
+}
+
+function stopPing() {
+    if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
+    }
+}
+
 function handleWebSocketMessage(data) {
     switch (data.type) {
         case 'connected':
             addMessage('system', data.content);
+            if (data.session_id) {
+                sessionId = data.session_id;
+                console.log('세션 ID:', sessionId);
+            }
+            if (data.connected_users) {
+                updateUserCount(data.connected_users);
+            }
             break;
+            
         case 'system':
         case 'warning':
             addMessage('system', data.content);
-            // 모델 로딩 메시지 분석하여 프로그레스 업데이트
             updateProgressFromMessage(data.content);
             break;
+            
         case 'progress':
             addMessage('system', data.content);
             updateProgressFromMessage(data.content);
             break;
+            
         case 'image_progress':
-            // 이미지 생성 프로그레스 (메시지 없이 프로그레스 바만 업데이트)
             showProgress(`이미지 생성 중... (${data.current}/${data.total})`, data.progress);
             break;
+            
         case 'model_progress':
-            // 모델 다운로드/로드 프로그레스 전용
             updateModelProgress(data.progress, data.label, data.detail, data.stage || '');
             setModelLoadingState(data.stage !== 'complete' && data.stage !== 'error');
             break;
+            
+        case 'model_status_change':
+            // 모델 상태 변경 (모든 사용자에게 동기화)
+            updateModelStatusFromData(data);
+            break;
+            
         case 'complete':
             addMessage('system', data.content);
             updateModelStatus();
             hideProgress();
             break;
+            
         case 'error':
             addMessage('system', data.content, 'error');
             hideProgress();
+            hideQueueStatus();
+            isGenerating = false;
+            setGenerateButtonState(false);
             break;
+            
+        case 'queue_status':
+            handleQueueStatus(data);
+            break;
+            
+        case 'queue_update':
+            // 큐 상태 전체 업데이트 (다른 사용자 포함)
+            // 필요시 UI 업데이트
+            break;
+            
+        case 'generation_result':
+            // 이미지 생성 결과
+            handleGenerationResult(data);
+            break;
+            
+        case 'user_count':
+            updateUserCount(data.count);
+            break;
+            
+        case 'pong':
+            // 핑 응답 (무시)
+            break;
+    }
+}
+
+// ============= 큐 상태 처리 =============
+function handleQueueStatus(data) {
+    const queueStatus = document.getElementById('queueStatus');
+    const queueStatusText = document.getElementById('queueStatusText');
+    const queueStatusPosition = document.getElementById('queueStatusPosition');
+    
+    if (data.status === 'queued' || data.status === 'waiting') {
+        queueStatus.style.display = 'flex';
+        queueStatusText.textContent = data.message || '대기 중...';
+        queueStatusPosition.textContent = `순서: ${data.position}`;
+        queueStatus.classList.remove('processing');
+        queueStatus.classList.add('waiting');
+    } else if (data.status === 'processing') {
+        queueStatus.style.display = 'flex';
+        queueStatusText.textContent = data.message || '생성 중...';
+        queueStatusPosition.textContent = '';
+        queueStatus.classList.remove('waiting');
+        queueStatus.classList.add('processing');
+    } else {
+        hideQueueStatus();
+    }
+}
+
+function hideQueueStatus() {
+    const queueStatus = document.getElementById('queueStatus');
+    if (queueStatus) {
+        queueStatus.style.display = 'none';
+    }
+}
+
+// ============= 생성 결과 처리 =============
+function handleGenerationResult(data) {
+    if (data.images && data.images.length > 0) {
+        addImageMessage(data.images, data.prompt);
+        
+        if (data.history_id) {
+            lastHistoryId = data.history_id;
+            setTimeout(() => {
+                saveConversationToHistory(data.history_id);
+            }, 500);
+        }
+    }
+    
+    hideQueueStatus();
+    hideProgress();
+    isGenerating = false;
+    setGenerateButtonState(false);
+}
+
+// ============= 접속자 수 업데이트 =============
+function updateUserCount(count) {
+    const userCountText = document.getElementById('userCountText');
+    if (userCountText) {
+        userCountText.textContent = count;
+    }
+}
+
+// ============= 모델 상태 동기화 =============
+function updateModelStatusFromData(data) {
+    const indicator = modelStatus.querySelector('.status-indicator');
+    const text = modelStatus.querySelector('span');
+    const statusBadge = document.getElementById('modelStatusBadge');
+    const dot = statusBadge?.querySelector('.status-dot');
+    const badgeText = statusBadge?.querySelector('.status-text');
+    
+    if (data.model_loaded) {
+        indicator.classList.add('online');
+        indicator.classList.remove('offline');
+        text.textContent = '모델 로드됨';
+        
+        if (dot) {
+            dot.classList.remove('offline', 'loading');
+            dot.classList.add('online');
+        }
+        if (badgeText && data.current_model) {
+            badgeText.textContent = `✓ ${data.current_model.split(' ')[0]}`;
+        }
+    } else {
+        indicator.classList.remove('online');
+        indicator.classList.add('offline');
+        text.textContent = '모델 미로드';
+        
+        if (dot) {
+            dot.classList.remove('online', 'loading');
+            dot.classList.add('offline');
+        }
+        if (badgeText) badgeText.textContent = '모델 미로드';
     }
 }
 
@@ -88,7 +240,6 @@ function showProgress(label = '작업 중...', percent = 0, stage = '') {
     percentEl.textContent = `${Math.round(percent)}%`;
     fillEl.style.width = `${percent}%`;
     
-    // 단계에 따른 스타일 변경
     if (stage) {
         currentStage = stage;
         fillEl.className = 'progress-fill';
@@ -141,7 +292,6 @@ function updateModelProgress(progress, label, detail, stage = '') {
 }
 
 function updateProgressFromMessage(message) {
-    // 메시지에서 프로그레스 추정
     if (message.includes('모델 로딩 중')) {
         showProgress('모델 로딩 중...', 30);
         setModelLoadingState(true);
@@ -155,7 +305,6 @@ function updateProgressFromMessage(message) {
         hideProgress();
         setModelLoadingState(false);
     } else if (message.includes('이미지 생성 중')) {
-        // 이미지 생성 진행률 파싱 (예: 1/4)
         const match = message.match(/\((\d+)\/(\d+)\)/);
         if (match) {
             const current = parseInt(match[1]);
@@ -195,10 +344,11 @@ function addImageMessage(images, prompt) {
     
     images.forEach(img => {
         const imgEl = document.createElement('img');
-        imgEl.src = `data:image/png;base64,${img.base64}`;
+        // base64가 있으면 사용, 없으면 path 사용
+        imgEl.src = img.base64 ? `data:image/png;base64,${img.base64}` : img.path;
         imgEl.alt = prompt;
         imgEl.title = `시드: ${img.seed}\n클릭하여 확대`;
-        imgEl.dataset.path = img.path;  // 이미지 경로 저장 (복원용)
+        imgEl.dataset.path = img.path;
         imgEl.onclick = () => showImageModal(img.path, img);
         imagesDiv.appendChild(imgEl);
     });
@@ -210,7 +360,6 @@ function addImageMessage(images, prompt) {
 }
 
 // ============= 대화 내용 관리 =============
-// 현재 대화 내용을 JSON 형태로 추출
 function getConversation() {
     const messages = [];
     const messageElements = chatMessages.querySelectorAll('.message');
@@ -222,11 +371,9 @@ function getConversation() {
         const contentEl = msgEl.querySelector('.message-content');
         if (!contentEl) return;
         
-        // 텍스트 메시지
         const textEl = contentEl.querySelector('p');
         const text = textEl ? textEl.innerHTML : '';
         
-        // 이미지 메시지
         const imagesEl = contentEl.querySelector('.message-images');
         let images = null;
         if (imagesEl) {
@@ -245,13 +392,10 @@ function getConversation() {
     return messages;
 }
 
-// 대화 내용 복원
 function restoreConversation(conversation) {
-    // 기존 대화 내용 삭제 (환영 메시지 제외)
     const existingMessages = chatMessages.querySelectorAll('.message');
     existingMessages.forEach(msg => msg.remove());
     
-    // 대화 내용 복원
     conversation.forEach(msg => {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${msg.type}`;
@@ -271,7 +415,6 @@ function restoreConversation(conversation) {
             
             msg.images.forEach(imgData => {
                 const imgEl = document.createElement('img');
-                // 경로 처리 - base64이면 그대로, 상대경로면 그대로
                 imgEl.src = imgData.path;
                 imgEl.alt = imgData.alt || '';
                 imgEl.dataset.path = imgData.path;
@@ -289,7 +432,6 @@ function restoreConversation(conversation) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-// 히스토리에 대화 내용 저장
 async function saveConversationToHistory(historyId) {
     if (!historyId) return;
     
@@ -306,7 +448,8 @@ async function saveConversationToHistory(historyId) {
 async function apiCall(endpoint, method = 'GET', body = null) {
     const options = {
         method,
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'  // 쿠키 포함
     };
     
     if (body) {
@@ -326,14 +469,13 @@ async function apiCall(endpoint, method = 'GET', body = null) {
 // ============= 이미지 생성 =============
 async function generateImage(preview = false) {
     if (isGenerating) {
-        alert('이미 생성 중입니다.');
+        addMessage('system', '⚠️ 이미 생성 요청이 진행 중입니다.');
         return;
     }
     
     const koreanText = document.getElementById('koreanInput')?.value?.trim() || '';
     let prompt = promptInput.value.trim();
     
-    // 한국어 입력이 있고 영어 프롬프트가 비어있으면 먼저 번역
     if (koreanText && !prompt) {
         addMessage('system', '🌐 번역 후 생성합니다...');
         const translated = await translateKoreanInput();
@@ -352,14 +494,12 @@ async function generateImage(preview = false) {
     isGenerating = true;
     setGenerateButtonState(true);
     
-    // 사용자 메시지 표시 (한국어가 있으면 둘 다 표시)
     if (koreanText && koreanText !== prompt) {
         addMessage('user', `🇰🇷 ${koreanText}\n🇺🇸 ${prompt}`);
     } else {
         addMessage('user', prompt);
     }
     
-    // 해상도 처리 - 커스텀 또는 프리셋
     let width, height;
     const resolutionValue = document.getElementById('resolutionSelect').value;
     
@@ -372,36 +512,28 @@ async function generateImage(preview = false) {
     
     const requestBody = {
         prompt,
-        korean_prompt: koreanText,  // 한국어 프롬프트도 함께 전송
+        korean_prompt: koreanText,
         width,
         height,
         steps: parseInt(document.getElementById('stepsInput').value) || 8,
         seed: parseInt(document.getElementById('seedInput').value) || -1,
         num_images: preview ? 1 : parseInt(document.getElementById('numImagesInput').value) || 1,
-        auto_translate: false  // UI에서 이미 번역됨
+        auto_translate: false
     };
     
     try {
         const endpoint = preview ? '/preview' : '/generate';
         const result = await apiCall(endpoint, 'POST', requestBody);
         
-        if (result.success && result.images) {
-            addImageMessage(result.images, result.prompt);
-            
-            // 히스토리에 대화 내용 저장
-            if (result.history_id) {
-                lastHistoryId = result.history_id;
-                // 약간의 딜레이 후 대화 내용 저장 (이미지가 DOM에 추가된 후)
-                setTimeout(() => {
-                    saveConversationToHistory(result.history_id);
-                }, 500);
-            }
+        if (result.queued) {
+            // 큐에 추가됨 - WebSocket으로 결과를 받음
+            console.log('요청이 큐에 추가됨:', result.item_id, '순서:', result.position);
         }
     } catch (error) {
         addMessage('system', `❌ 오류: ${error.message}`, 'error');
-    } finally {
         isGenerating = false;
         setGenerateButtonState(false);
+        hideQueueStatus();
     }
 }
 
@@ -426,13 +558,11 @@ async function loadModel(fromChat = false) {
         return;
     }
     
-    // 양자화 옵션을 드롭다운에서 가져오기 (대화탭 또는 설정탭에서)
     const quantization = fromChat
         ? document.getElementById('chatQuantizationSelect')?.value || "BF16 (기본, 최고품질)"
         : document.getElementById('quantizationSelect')?.value || "BF16 (기본, 최고품질)";
     const modelPath = document.getElementById('modelPathInput')?.value || '';
     
-    // CPU 오프로딩 체크 (대화탭 또는 설정탭에서)
     const cpuOffload = fromChat 
         ? document.getElementById('chatCpuOffloadCheck')?.checked || false
         : document.getElementById('cpuOffloadCheck')?.checked || false;
@@ -453,7 +583,6 @@ async function loadModel(fromChat = false) {
         updateProgress(100, '모델 로드 완료!');
         setTimeout(hideProgress, 1500);
         
-        // 다운로드 상태 업데이트 (새로 다운로드된 모델 반영)
         updateModelDownloadStatus();
     } catch (error) {
         addMessage('system', `❌ 모델 로드 실패: ${error.message}`, 'error');
@@ -470,7 +599,7 @@ async function unloadModel() {
     }
     
     try {
-        setModelLoadingState(true);  // 언로드 시작 시 버튼 비활성화
+        setModelLoadingState(true);
         showProgress('모델 언로드 중...', 50);
         addMessage('system', '🔄 모델 언로드 중...');
         
@@ -483,14 +612,13 @@ async function unloadModel() {
         addMessage('system', `❌ 모델 언로드 실패: ${error.message}`, 'error');
         hideProgress();
     } finally {
-        setModelLoadingState(false);  // 완료 후 버튼 다시 활성화
+        setModelLoadingState(false);
     }
 }
 
 function setModelLoadingState(loading) {
     isModelLoading = loading;
     
-    // 버튼 상태 업데이트
     const loadButtons = [
         document.getElementById('btnLoadModel'),
         document.getElementById('btnChatLoadModel')
@@ -515,7 +643,6 @@ function setModelLoadingState(loading) {
         if (btn) btn.disabled = loading;
     });
     
-    // 모델 상태 배지 업데이트
     const statusBadge = document.getElementById('modelStatusBadge');
     if (statusBadge) {
         const dot = statusBadge.querySelector('.status-dot');
@@ -533,22 +660,18 @@ async function updateModelStatus() {
     try {
         const status = await apiCall('/status');
         
-        // 사이드바 상태
         const indicator = modelStatus.querySelector('.status-indicator');
         const text = modelStatus.querySelector('span');
         
-        // 대화탭 상태 배지
         const statusBadge = document.getElementById('modelStatusBadge');
         const dot = statusBadge?.querySelector('.status-dot');
         const badgeText = statusBadge?.querySelector('.status-text');
         
         if (status.model_loaded) {
-            // 사이드바
             indicator.classList.add('online');
             indicator.classList.remove('offline');
             text.textContent = '모델 로드됨';
             
-            // 대화탭
             if (dot) {
                 dot.classList.remove('offline', 'loading');
                 dot.classList.add('online');
@@ -557,32 +680,141 @@ async function updateModelStatus() {
                 badgeText.textContent = status.current_model ? `✓ ${status.current_model.split(' ')[0]}` : '모델 로드됨';
             }
         } else {
-            // 사이드바
             indicator.classList.remove('online');
             indicator.classList.add('offline');
             text.textContent = '모델 미로드';
             
-            // 대화탭
             if (dot) {
                 dot.classList.remove('online', 'loading');
                 dot.classList.add('offline');
             }
             if (badgeText) badgeText.textContent = '모델 미로드';
         }
+        
+        // 관리자 상태 업데이트
+        if (status.is_admin !== undefined) {
+            isAdmin = status.is_admin;
+            updateAdminUI();
+        }
+        
+        // 접속자 수 업데이트
+        if (status.connected_users) {
+            updateUserCount(status.connected_users);
+        }
     } catch (error) {
         console.error('상태 업데이트 실패:', error);
     }
 }
 
-// ============= 프롬프트 도구 =============
+// ============= 관리자 UI 업데이트 =============
+function updateAdminUI() {
+    const adminNotice = document.getElementById('adminNotice');
+    const llmSettingsSection = document.getElementById('llmSettingsSection');
+    const sessionManagementSection = document.getElementById('sessionManagementSection');
+    const systemPromptsSection = document.getElementById('systemPromptsSection');
+    const autoUnloadSection = document.getElementById('autoUnloadSection');
+    
+    // 시스템 프롬프트는 개인화되므로 항상 활성화
+    if (systemPromptsSection) {
+        systemPromptsSection.querySelectorAll('input, select, textarea, button').forEach(el => {
+            el.disabled = false;
+            el.style.display = '';
+        });
+    }
+    
+    if (isAdmin) {
+        // 관리자: LLM 설정 및 자동 언로드 설정 변경 가능
+        if (adminNotice) adminNotice.style.display = 'none';
+        if (llmSettingsSection) {
+            llmSettingsSection.querySelectorAll('input, select, button').forEach(el => {
+                el.disabled = false;
+                el.style.display = '';
+            });
+        }
+        if (autoUnloadSection) {
+            autoUnloadSection.querySelectorAll('input, button').forEach(el => {
+                el.disabled = false;
+                el.style.display = '';
+            });
+        }
+        if (sessionManagementSection) {
+            sessionManagementSection.style.display = 'block';
+            loadSessionList();
+        }
+    } else {
+        // 일반 사용자: LLM 설정 및 자동 언로드 설정 읽기 전용
+        if (adminNotice) adminNotice.style.display = 'block';
+        if (llmSettingsSection) {
+            llmSettingsSection.querySelectorAll('input, select').forEach(el => {
+                el.disabled = true;
+            });
+            llmSettingsSection.querySelectorAll('button').forEach(el => {
+                el.style.display = 'none';
+            });
+        }
+        if (autoUnloadSection) {
+            autoUnloadSection.querySelectorAll('input').forEach(el => {
+                el.disabled = true;
+            });
+            autoUnloadSection.querySelectorAll('button').forEach(el => {
+                el.style.display = 'none';
+            });
+        }
+        if (sessionManagementSection) {
+            sessionManagementSection.style.display = 'none';
+        }
+    }
+}
 
-// 한국어 텍스트 감지
+// ============= 세션 관리 (관리자 전용) =============
+async function loadSessionList() {
+    if (!isAdmin) return;
+    
+    try {
+        const result = await apiCall('/admin/sessions');
+        const sessionList = document.getElementById('sessionList');
+        
+        // 헤더 유지하고 나머지 삭제
+        const header = sessionList.querySelector('.session-list-header');
+        sessionList.innerHTML = '';
+        if (header) sessionList.appendChild(header);
+        
+        result.sessions.forEach(session => {
+            const item = document.createElement('div');
+            item.className = 'session-list-item';
+            item.innerHTML = `
+                <span class="session-id" title="${session.session_id}">${session.session_id.substring(0, 8)}...</span>
+                <span class="session-activity">${formatDate(session.last_activity)}</span>
+                <span class="session-size">${session.data_size}</span>
+                <button class="btn btn-xs btn-danger" onclick="deleteSession('${session.session_id}')">
+                    <i class="ri-delete-bin-line"></i>
+                </button>
+            `;
+            sessionList.appendChild(item);
+        });
+    } catch (error) {
+        console.error('세션 목록 로드 실패:', error);
+    }
+}
+
+async function deleteSession(sessionId) {
+    if (!confirm('이 세션의 모든 데이터(히스토리, 즐겨찾기, 이미지)를 삭제하시겠습니까?')) return;
+    
+    try {
+        await apiCall(`/admin/sessions/${sessionId}`, 'DELETE');
+        loadSessionList();
+        addMessage('system', '✅ 세션이 삭제되었습니다.');
+    } catch (error) {
+        addMessage('system', `❌ 세션 삭제 실패: ${error.message}`, 'error');
+    }
+}
+
+// ============= 프롬프트 도구 =============
 function isKorean(text) {
     const koreanRegex = /[가-힣]/;
     return koreanRegex.test(text);
 }
 
-// 한국어 입력창 번역 (버튼 클릭)
 async function translateKoreanInput() {
     const koreanInputEl = document.getElementById('koreanInput');
     const koreanText = koreanInputEl?.value?.trim();
@@ -593,12 +825,10 @@ async function translateKoreanInput() {
         return false;
     }
     
-    // 이미 번역 중이면 대기
     if (isTranslating) {
         return false;
     }
     
-    // 한국어가 포함되어 있지 않으면 그대로 복사
     if (!isKorean(koreanText)) {
         document.getElementById('promptInput').value = koreanText;
         if (statusEl) {
@@ -648,7 +878,6 @@ async function translateKoreanInput() {
     }
 }
 
-// 기존 번역 버튼 (옵션바의 번역 버튼)
 async function translatePrompt() {
     const koreanInputEl = document.getElementById('koreanInput');
     const text = koreanInputEl?.value?.trim() || promptInput.value.trim();
@@ -667,24 +896,6 @@ async function translatePrompt() {
     }
 }
 
-// 번역이 필요한지 확인 (한국어 입력창에 텍스트가 있고, 영어 프롬프트가 비어있거나 다른 경우)
-function needsTranslation() {
-    const koreanText = document.getElementById('koreanInput')?.value?.trim() || '';
-    const englishText = document.getElementById('promptInput')?.value?.trim() || '';
-    
-    // 한국어 입력이 있고, 영어가 비어있으면 번역 필요
-    if (koreanText && !englishText) {
-        return true;
-    }
-    
-    // 한국어 입력이 있고, 한국어가 포함되어 있으면 번역 필요
-    if (koreanText && isKorean(koreanText)) {
-        return true;
-    }
-    
-    return false;
-}
-
 async function enhancePrompt() {
     const prompt = promptInput.value.trim();
     if (!prompt) return;
@@ -700,7 +911,6 @@ async function enhancePrompt() {
             promptInput.value = result.enhanced;
             addMessage('system', '✅ 프롬프트 향상 완료');
             
-            // 향상된 영어 프롬프트를 한국어로 역번역
             if (koreanInputEl) {
                 try {
                     if (statusEl) {
@@ -727,7 +937,6 @@ async function enhancePrompt() {
                     }
                 } catch (reverseError) {
                     console.error('역번역 실패:', reverseError);
-                    // 역번역 실패해도 향상은 성공했으므로 에러 메시지 안 띄움
                     if (statusEl) {
                         statusEl.textContent = '';
                         statusEl.className = 'translate-status';
@@ -766,7 +975,6 @@ async function loadTemplates() {
 function applyTemplate(name, template) {
     let prompt = template.prompt;
     
-    // 변수 기본값 적용
     if (template.variables) {
         for (const [key, value] of Object.entries(template.variables)) {
             prompt = prompt.replace(`{${key}}`, value);
@@ -774,7 +982,6 @@ function applyTemplate(name, template) {
     }
     
     promptInput.value = prompt;
-    // 한국어 입력창 비우기 (영어 템플릿 직접 사용)
     const koreanInputEl = document.getElementById('koreanInput');
     if (koreanInputEl) koreanInputEl.value = '';
     
@@ -790,7 +997,6 @@ async function loadQuantizationOptions() {
         const chatSelect = document.getElementById('chatQuantizationSelect');
         
         if (result.quantization_options) {
-            // 설정 탭과 대화 탭 드롭다운 모두 채우기
             [settingsSelect, chatSelect].forEach(select => {
                 if (select) {
                     select.innerHTML = '';
@@ -798,17 +1004,14 @@ async function loadQuantizationOptions() {
                     result.quantization_options.forEach(option => {
                         const opt = document.createElement('option');
                         opt.value = option;
-                        // 대화 탭에서는 짧게 표시
                         if (select === chatSelect) {
-                            // "GGUF Q8_0 (7.22GB, 고품질)" -> "Q8_0 (7.22GB)"
-                            // "BF16 (기본, 최고품질)" -> "BF16 (최고품질)"
                             let shortName = option;
                             const match = option.match(/^(?:GGUF\s+)?(\S+)\s*\(([^,]+)/);
                             if (match) {
                                 shortName = `${match[1]} (${match[2].trim()})`;
                             }
                             opt.textContent = shortName;
-                            opt.title = option;  // 전체 이름은 툴팁으로
+                            opt.title = option;
                         } else {
                             opt.textContent = option;
                         }
@@ -819,15 +1022,19 @@ async function loadQuantizationOptions() {
             
             console.log('양자화 옵션 로드 완료:', result.quantization_options.length + '개');
             
-            // 다운로드 상태 확인 및 표시
             updateModelDownloadStatus();
+        }
+        
+        // 관리자 상태 업데이트
+        if (result.is_admin !== undefined) {
+            isAdmin = result.is_admin;
+            updateAdminUI();
         }
     } catch (error) {
         console.error('양자화 옵션 로드 실패:', error);
     }
 }
 
-// 모델 다운로드 상태 업데이트
 async function updateModelDownloadStatus() {
     try {
         const result = await apiCall('/model-status');
@@ -843,19 +1050,16 @@ async function updateModelDownloadStatus() {
                 const optionName = opt.value;
                 const isDownloaded = status[optionName] || false;
                 
-                // 기존 텍스트에서 다운로드 표시 제거
                 let text = opt.textContent.replace(/^[✓⬇]\s*/, '');
                 
-                // 다운로드 상태에 따라 표시
                 if (isDownloaded) {
                     opt.textContent = `✓ ${text}`;
-                    opt.style.color = '#22c55e';  // 녹색
+                    opt.style.color = '#22c55e';
                 } else {
                     opt.textContent = `⬇ ${text}`;
-                    opt.style.color = '';  // 기본색
+                    opt.style.color = '';
                 }
                 
-                // 툴팁 업데이트
                 const statusText = isDownloaded ? '(다운로드됨)' : '(미다운로드)';
                 opt.title = `${optionName} ${statusText}`;
             });
@@ -922,16 +1126,13 @@ async function loadHistory() {
     }
 }
 
-// 히스토리 항목 사용 (한국어/영어 프롬프트 모두 복원)
 async function useHistoryEntry(historyId) {
     try {
         const result = await apiCall(`/history/${historyId}`);
         const entry = result.history;
         
-        // 영어 프롬프트 설정
         promptInput.value = entry.prompt;
         
-        // 한국어 프롬프트 복원
         const koreanInputEl = document.getElementById('koreanInput');
         if (koreanInputEl) {
             koreanInputEl.value = entry.korean_prompt || '';
@@ -950,7 +1151,6 @@ async function useHistoryEntry(historyId) {
     }
 }
 
-// 레거시 호환 (이전 방식)
 function useHistoryPrompt(prompt) {
     promptInput.value = prompt;
     const koreanInputEl = document.getElementById('koreanInput');
@@ -959,33 +1159,27 @@ function useHistoryPrompt(prompt) {
     addMessage('system', '✅ 프롬프트 적용됨');
 }
 
-// 히스토리에서 대화 내용 복원
 async function restoreHistoryConversation(historyId) {
     try {
         const result = await apiCall(`/history/${historyId}`);
         const entry = result.history;
         
         if (entry.conversation && entry.conversation.length > 0) {
-            // 확인 대화상자
             if (!confirm('현재 대화 내용을 지우고 히스토리의 대화를 복원하시겠습니까?')) {
                 return;
             }
             
-            // 프롬프트 설정 (영어)
             promptInput.value = entry.prompt;
             
-            // 한국어 프롬프트 복원
             const koreanInputEl = document.getElementById('koreanInput');
             if (koreanInputEl) {
                 koreanInputEl.value = entry.korean_prompt || '';
             }
             
-            // 설정 복원
             if (entry.settings) {
                 if (entry.settings.width && entry.settings.height) {
                     const resSelect = document.getElementById('resolutionSelect');
                     const resValue = `${entry.settings.width}x${entry.settings.height}`;
-                    // 프리셋에 있으면 선택, 없으면 커스텀
                     if ([...resSelect.options].some(opt => opt.value === resValue)) {
                         resSelect.value = resValue;
                         document.getElementById('customResolution').style.display = 'none';
@@ -1004,10 +1198,8 @@ async function restoreHistoryConversation(historyId) {
                 }
             }
             
-            // 대화 내용 복원
             restoreConversation(entry.conversation);
             
-            // 탭 전환
             switchTab('chat');
             
             addMessage('system', '✅ 히스토리에서 대화가 복원되었습니다.');
@@ -1062,7 +1254,6 @@ async function loadFavorites() {
 
 function useFavorite(prompt) {
     promptInput.value = prompt;
-    // 한국어 입력창 비우기 (영어 프롬프트 직접 사용)
     const koreanInputEl = document.getElementById('koreanInput');
     if (koreanInputEl) koreanInputEl.value = '';
     switchTab('chat');
@@ -1116,12 +1307,9 @@ async function loadLlmProviders() {
         const currentProvider = result.llm_provider || 'openai';
         const currentModel = result.llm_model || '';
         
-        // 설정탭 프로바이더 셀렉트
         const providerSelect = document.getElementById('llmProviderSelect');
-        // 대화탭 프로바이더 셀렉트
         const chatProviderSelect = document.getElementById('chatLlmProviderSelect');
         
-        // 프로바이더 옵션 채우기
         [providerSelect, chatProviderSelect].forEach(select => {
             if (select) {
                 select.innerHTML = '';
@@ -1135,18 +1323,15 @@ async function loadLlmProviders() {
             }
         });
         
-        // 모델 목록 업데이트 (설정탭 + 대화탭)
         updateLlmModelList(currentProvider, currentModel);
         updateChatLlmModelList(currentProvider, currentModel);
         
-        // Base URL 표시 (커스텀 provider인 경우)
         updateLlmBaseUrlVisibility(currentProvider);
         if (result.llm_base_url) {
             const baseUrlInput = document.getElementById('llmBaseUrlInput');
             if (baseUrlInput) baseUrlInput.value = result.llm_base_url;
         }
         
-        // 시스템 프롬프트 로드
         defaultTranslatePrompt = result.default_translate_system_prompt || '';
         defaultEnhancePrompt = result.default_enhance_system_prompt || '';
         
@@ -1158,6 +1343,12 @@ async function loadLlmProviders() {
         }
         if (enhancePromptInput) {
             enhancePromptInput.value = result.enhance_system_prompt || defaultEnhancePrompt;
+        }
+        
+        // 관리자 상태 업데이트
+        if (result.is_admin !== undefined) {
+            isAdmin = result.is_admin;
+            updateAdminUI();
         }
         
         console.log('LLM 프로바이더 로드 완료:', Object.keys(llmProviders).length + '개');
@@ -1174,7 +1365,6 @@ function updateLlmModelList(providerId, currentModel = '') {
     const provider = llmProviders[providerId];
     modelSelect.innerHTML = '<option value="">기본 모델</option>';
     
-    // 프리셋 모델 추가
     provider.models.forEach(model => {
         const opt = document.createElement('option');
         opt.value = model;
@@ -1182,20 +1372,17 @@ function updateLlmModelList(providerId, currentModel = '') {
         modelSelect.appendChild(opt);
     });
     
-    // 직접 입력 옵션 추가
     const customOpt = document.createElement('option');
     customOpt.value = '__custom__';
     customOpt.textContent = '✏️ 직접 입력...';
     modelSelect.appendChild(customOpt);
     
-    // 현재 모델이 프리셋에 있는지 확인
     const isPresetModel = currentModel === '' || provider.models.includes(currentModel);
     
     if (isPresetModel) {
         modelSelect.value = currentModel;
         if (customInput) customInput.style.display = 'none';
     } else {
-        // 프리셋에 없으면 직접 입력 모드
         modelSelect.value = '__custom__';
         if (customInput) {
             customInput.style.display = 'block';
@@ -1203,7 +1390,6 @@ function updateLlmModelList(providerId, currentModel = '') {
         }
     }
     
-    // 기본 모델 표시
     const infoEl = document.getElementById('llmProviderInfo');
     if (infoEl) {
         let infoText = `💡 ${provider.name}`;
@@ -1217,7 +1403,6 @@ function updateLlmModelList(providerId, currentModel = '') {
     }
 }
 
-// 대화탭 LLM 모델 목록 업데이트
 function updateChatLlmModelList(providerId, currentModel = '') {
     const modelSelect = document.getElementById('chatLlmModelSelect');
     if (!modelSelect || !llmProviders[providerId]) return;
@@ -1228,16 +1413,16 @@ function updateChatLlmModelList(providerId, currentModel = '') {
     provider.models.forEach(model => {
         const opt = document.createElement('option');
         opt.value = model;
-        // 모델명이 길면 줄임 (대화탭에서는 공간이 좁음)
         opt.textContent = model.length > 20 ? model.substring(0, 18) + '...' : model;
-        opt.title = model;  // 전체 이름은 툴팁으로
+        opt.title = model;
         if (model === currentModel) opt.selected = true;
         modelSelect.appendChild(opt);
     });
 }
 
-// 대화탭에서 LLM 설정 변경 시 자동 저장
 async function saveChatLlmSettings() {
+    if (!isAdmin) return;  // 관리자만 저장 가능
+    
     const provider = document.getElementById('chatLlmProviderSelect')?.value;
     const model = document.getElementById('chatLlmModelSelect')?.value;
     
@@ -1249,7 +1434,6 @@ async function saveChatLlmSettings() {
             llm_model: model
         });
         
-        // 설정탭 셀렉트도 동기화
         const settingsProviderSelect = document.getElementById('llmProviderSelect');
         const settingsModelSelect = document.getElementById('llmModelSelect');
         if (settingsProviderSelect) settingsProviderSelect.value = provider;
@@ -1267,7 +1451,6 @@ async function saveChatLlmSettings() {
 function updateLlmBaseUrlVisibility(providerId) {
     const baseUrlGroup = document.getElementById('llmBaseUrlGroup');
     if (baseUrlGroup) {
-        // 커스텀 provider이거나 로컬 서버인 경우 Base URL 표시
         baseUrlGroup.style.display = 
             (providerId === 'custom' || providerId === 'ollama' || providerId === 'lmstudio') 
             ? 'block' : 'none';
@@ -1275,11 +1458,15 @@ function updateLlmBaseUrlVisibility(providerId) {
 }
 
 async function saveLlmSettings() {
+    if (!isAdmin) {
+        addMessage('system', '❌ 설정 변경은 관리자만 가능합니다.', 'error');
+        return;
+    }
+    
     const provider = document.getElementById('llmProviderSelect').value;
     const apiKey = document.getElementById('llmApiKeyInput').value.trim();
     const baseUrl = document.getElementById('llmBaseUrlInput').value.trim();
     
-    // 모델: 직접 입력인 경우 customInput 값 사용
     const modelSelect = document.getElementById('llmModelSelect');
     const customInput = document.getElementById('llmModelCustomInput');
     let model = modelSelect.value;
@@ -1296,7 +1483,6 @@ async function saveLlmSettings() {
             llm_model: model
         });
         
-        // 대화탭 셀렉트도 동기화
         const chatProviderSelect = document.getElementById('chatLlmProviderSelect');
         const chatModelSelect = document.getElementById('chatLlmModelSelect');
         if (chatProviderSelect) chatProviderSelect.value = provider;
@@ -1308,7 +1494,6 @@ async function saveLlmSettings() {
     }
 }
 
-// 레거시 호환
 async function saveApiKey() {
     const apiKey = document.getElementById('apiKeyInput')?.value?.trim() || 
                    document.getElementById('llmApiKeyInput')?.value?.trim();
@@ -1321,8 +1506,12 @@ async function saveApiKey() {
     }
 }
 
-// 자동 언로드 설정 저장
 async function saveAutoUnloadSettings() {
+    if (!isAdmin) {
+        addMessage('system', '❌ 자동 언로드 설정은 관리자만 변경할 수 있습니다.', 'error');
+        return;
+    }
+    
     const enabled = document.getElementById('autoUnloadEnabledCheck')?.checked ?? true;
     const timeout = parseInt(document.getElementById('autoUnloadTimeoutInput')?.value) || 10;
     
@@ -1339,7 +1528,6 @@ async function saveAutoUnloadSettings() {
     }
 }
 
-// 자동 언로드 설정 로드
 async function loadAutoUnloadSettings() {
     try {
         const result = await apiCall('/settings');
@@ -1363,56 +1551,72 @@ async function loadAutoUnloadSettings() {
     }
 }
 
-// 시스템 프롬프트 저장
 async function saveSystemPrompts() {
+    // 시스템 프롬프트는 세션별 개인화 - 모든 사용자 저장 가능
     const translatePrompt = document.getElementById('translateSystemPrompt')?.value || '';
     const enhancePrompt = document.getElementById('enhanceSystemPrompt')?.value || '';
     
     try {
-        await apiCall('/settings', 'POST', {
+        await apiCall('/settings/prompts', 'POST', {
             translate_system_prompt: translatePrompt,
             enhance_system_prompt: enhancePrompt
         });
-        addMessage('system', '✅ 시스템 프롬프트 저장됨');
+        addMessage('system', '✅ 시스템 프롬프트 저장됨 (내 설정)');
     } catch (error) {
         addMessage('system', `❌ 저장 실패: ${error.message}`, 'error');
     }
 }
 
-// 번역 시스템 프롬프트 초기화
-function resetTranslatePrompt() {
+async function resetTranslatePrompt() {
     const translatePromptInput = document.getElementById('translateSystemPrompt');
     if (translatePromptInput && defaultTranslatePrompt) {
         translatePromptInput.value = defaultTranslatePrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                translate_system_prompt: ''  // 빈 문자열로 저장하면 기본값 사용
+            });
+        } catch (error) {
+            console.error('번역 프롬프트 초기화 실패:', error);
+        }
+        
         addMessage('system', '✅ 번역 시스템 프롬프트가 기본값으로 초기화되었습니다.');
     }
 }
 
-// 향상 시스템 프롬프트 초기화
-function resetEnhancePrompt() {
+async function resetEnhancePrompt() {
     const enhancePromptInput = document.getElementById('enhanceSystemPrompt');
     if (enhancePromptInput && defaultEnhancePrompt) {
         enhancePromptInput.value = defaultEnhancePrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                enhance_system_prompt: ''  // 빈 문자열로 저장하면 기본값 사용
+            });
+        } catch (error) {
+            console.error('향상 프롬프트 초기화 실패:', error);
+        }
+        
         addMessage('system', '✅ 향상 시스템 프롬프트가 기본값으로 초기화되었습니다.');
     }
 }
 
 // ============= UI 헬퍼 =============
 function switchTab(tabId) {
-    // 네비게이션 버튼 상태
     document.querySelectorAll('.nav-item').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tabId);
     });
     
-    // 탭 컨텐츠 표시
     document.querySelectorAll('.tab-content').forEach(tab => {
         tab.classList.toggle('active', tab.id === `tab-${tabId}`);
     });
     
-    // 탭별 데이터 로드
     if (tabId === 'gallery') loadGallery();
     if (tabId === 'history') loadHistory();
     if (tabId === 'favorites') loadFavorites();
+    if (tabId === 'settings' && isAdmin) loadSessionList();
 }
 
 function showImageModal(path, metadata) {
@@ -1493,7 +1697,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // 한국어 입력창 이벤트
     const koreanInputEl = document.getElementById('koreanInput');
     if (koreanInputEl) {
-        // Enter 키로 생성 (번역 후 자동 생성)
         koreanInputEl.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -1569,14 +1772,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (chatLlmProviderSelect) {
         chatLlmProviderSelect.addEventListener('change', (e) => {
             updateChatLlmModelList(e.target.value);
-            saveChatLlmSettings();
+            if (isAdmin) saveChatLlmSettings();
         });
     }
     
     const chatLlmModelSelect = document.getElementById('chatLlmModelSelect');
     if (chatLlmModelSelect) {
         chatLlmModelSelect.addEventListener('change', () => {
-            saveChatLlmSettings();
+            if (isAdmin) saveChatLlmSettings();
         });
     }
     
@@ -1622,6 +1825,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // 즐겨찾기
     document.getElementById('btnSaveFavorite').addEventListener('click', saveFavorite);
     
+    // 세션 관리 새로고침
+    const btnRefreshSessions = document.getElementById('btnRefreshSessions');
+    if (btnRefreshSessions) {
+        btnRefreshSessions.addEventListener('click', loadSessionList);
+    }
+    
     // 모달 닫기
     document.getElementById('closeImageModal').addEventListener('click', () => closeModal('imageModal'));
     
@@ -1642,7 +1851,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     
-    // 즐겨찾기 저장 버튼 (프롬프트 입력 후 ⭐ 버튼 추가)
+    // 즐겨찾기 저장 버튼
     const favBtn = document.createElement('button');
     favBtn.className = 'option-btn';
     favBtn.innerHTML = '<i class="ri-star-line"></i>';
