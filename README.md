@@ -9,7 +9,7 @@
 
 **Z-Image Turbo 모델을 활용한 빠르고 고품질의 AI 이미지 생성 웹 인터페이스**
 
-[🚀 빠른 시작](#-빠른-시작) • [✨ 주요 기능](#-주요-기능) • [📦 설치 가이드](#-설치-가이드) • [🎯 사용 방법](#-사용-방법) • [⚙️ 설정](#️-설정)
+[🚀 빠른 시작](#-빠른-시작) • [✨ 주요 기능](#-주요-기능) • [📦 설치 가이드](#-설치-가이드) • [🎯 사용 방법](#-사용-방법) • [⚙️ 설정](#️-설정) • [📚 상세 가이드](HowToUse.md)
 
 </div>
 
@@ -21,50 +21,75 @@ Z-Image WebUI는 [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-
 
 ### 왜 Z-Image WebUI인가?
 
-- ⚡ **빠른 생성**: Turbo 모델로 8~9 스텝만에 고품질 이미지 생성
-- 🇰🇷 **한국어 지원**: 한국어 프롬프트 자동 번역 및 역번역
-- 💾 **VRAM 절약**: GGUF 양자화로 3.7GB~7.2GB VRAM만으로 실행 가능
+- ⚡ **빠른 생성**: Turbo 모델로 4~12 스텝만에 고품질 이미지 생성
+- 🇰🇷 **한국어 지원**: 한국어 프롬프트 자동 번역 및 AI 향상
+- 💾 **VRAM 절약**: GGUF 양자화로 3.8GB~7.2GB VRAM만으로 실행 가능
 - 🤖 **AI 프롬프트 향상**: LLM을 활용한 프롬프트 자동 개선
 - 🖼️ **업스케일링**: Real-ESRGAN 기반 고화질 업스케일링
+
+---
+
+## 🖥️ 스크린샷
+
+### 대화 탭 - 이미지 생성
+![대화 탭](Assets/01_webui.png)
+
+### 갤러리 탭
+![갤러리](Assets/02_갤러리.png)
+
+### 설정 탭
+![설정](Assets/05_Settings.png)
+
+> 📚 더 자세한 사용법은 [HowToUse.md](HowToUse.md)를 참조하세요.
 
 ---
 
 ## ✨ 주요 기능
 
 ### 🎨 이미지 생성
-- **다양한 해상도**: 512x512부터 1024x1024까지 프리셋 제공
+- **다양한 해상도**: 512x512부터 1024x1024까지 프리셋 + 커스텀 해상도
 - **시드 컨트롤**: 재현 가능한 결과를 위한 시드 관리
-- **배치 생성**: 한 번에 여러 이미지 생성
-- **미리보기**: 256x256 빠른 미리보기 모드
+- **배치 생성**: 한 번에 여러 이미지 생성 (1~10장)
+- **미리보기**: 256x256 빠른 미리보기 모드로 프롬프트 테스트
 
 ### 🌐 프롬프트 도구
 - **자동 번역**: 한국어 → 영어 실시간 번역
-- **역번역**: 영어 → 한국어 프롬프트 번역
 - **AI 향상**: 간단한 프롬프트를 상세하게 확장
 - **템플릿**: 인물, 풍경, 애니메이션 등 미리 정의된 템플릿
+- **커스텀 시스템 프롬프트**: 번역/향상 동작 커스터마이징
 
 ### 💾 모델 관리
 - **BF16 기본 모델**: 최고 품질 (약 12GB VRAM)
 - **GGUF 양자화**: Q3~Q8까지 다양한 옵션
-  - Q4_K_M (4.98GB) - 품질과 VRAM의 균형, **추천**
-  - Q8_0 (7.22GB) - 고품질
-  - Q3_K_S (3.79GB) - 최저 VRAM
+- **CPU 오프로딩**: VRAM 부족 시 RAM 활용
 - **자동 언로드**: 비활성 시 자동으로 모델 언로드하여 VRAM 절약
 
+#### 양자화 옵션 가이드
+
+| 옵션 | VRAM 사용량 | 품질 | 추천 대상 |
+|-----|------------|-----|----------|
+| BF16 (기본) | ~12GB | ⭐⭐⭐⭐⭐ 최고 | 고성능 GPU (RTX 4080+) |
+| Q8_0 | ~7.2GB | ⭐⭐⭐⭐ 고품질 | RTX 3070 이상 |
+| Q6_K | ~6.1GB | ⭐⭐⭐⭐ 고품질 | RTX 3060 이상 |
+| **Q4_K_M** | ~5GB | ⭐⭐⭐ 균형 | **일반 사용자 추천** |
+| Q4_K_S | ~4.5GB | ⭐⭐⭐ 양호 | RTX 2060 이상 |
+| Q3_K_M | ~4GB | ⭐⭐ 보통 | 저사양 GPU |
+| Q3_K_S | ~3.8GB | ⭐⭐ 보통 | 최저 VRAM |
+
 ### 🖼️ 갤러리 & 관리
-- **갤러리**: 생성된 이미지 썸네일 뷰
+- **갤러리**: 생성된 이미지 썸네일 뷰 + 상세 보기
 - **메타데이터**: 각 이미지에 프롬프트, 시드 등 메타데이터 저장
-- **히스토리**: 프롬프트 사용 기록 관리
+- **히스토리**: 프롬프트 사용 기록 관리 및 복원
 - **즐겨찾기**: 자주 사용하는 프롬프트 저장
 
 ### 🔧 LLM Provider 지원
-- OpenAI (GPT-4o, GPT-4o-mini 등)
-- Groq (Llama, Mixtral)
-- Together AI
-- Ollama (로컬)
-- LM Studio (로컬)
-- OpenRouter
-- 커스텀 OpenAI 호환 API
+- **OpenAI**: GPT-4o, GPT-4o-mini 등
+- **Groq**: Llama, Mixtral (무료, 빠름!)
+- **Together AI**: 다양한 오픈소스 모델
+- **Ollama**: 로컬 LLM (API 키 불필요)
+- **LM Studio**: 로컬 LLM (API 키 불필요)
+- **OpenRouter**: 여러 모델 통합
+- **커스텀**: OpenAI 호환 API
 
 ---
 
@@ -112,7 +137,7 @@ python app.py
 ### 1. 저장소 클론
 
 ```bash
-git clone https://github.com/your-username/Z-Image_WebUI.git
+git clone https://github.com/PriuS2/Z-Image_WebUI.git
 cd Z-Image_WebUI
 ```
 
@@ -151,32 +176,38 @@ pip install -r requirements-upscale.txt
 
 ## 🎯 사용 방법
 
+> 📚 더 자세한 사용법은 [HowToUse.md](HowToUse.md)를 참조하세요.
+
 ### 1. 모델 로드
 
-1. 웹 UI에서 **설정** 탭으로 이동
-2. 양자화 옵션 선택 (VRAM에 따라)
-3. **모델 로드** 클릭
-4. 첫 실행 시 모델 다운로드 (약 5~12GB)
+1. 웹 UI 상단의 **양자화 옵션** 선택 (VRAM에 따라)
+2. **로드** 버튼 클릭
+3. 첫 실행 시 모델 다운로드 (약 5~12GB)
+
+> 💡 **Tip:** 처음 사용 시 Q4_K_M을 추천합니다. 품질과 VRAM 사용량의 균형이 좋습니다.
 
 ### 2. 이미지 생성
 
-1. **프롬프트** 입력 (한국어 또는 영어)
-2. 해상도, 스텝 수 설정
-3. **생성** 버튼 클릭
+1. **한국어 입력란**에 원하는 이미지 설명 입력
+2. **번역** 버튼으로 영어로 변환 (또는 직접 영어로 입력)
+3. 해상도, 스텝 수, 시드 설정
+4. **생성** 버튼 클릭
 
 ### 3. 프롬프트 도구 활용
 
 | 버튼 | 기능 |
 |-----|------|
-| 🌐 번역 | 한국어 → 영어 번역 |
-| ⬅️ 역번역 | 영어 → 한국어 번역 |
-| ✨ AI 향상 | 프롬프트 상세화 |
-| 📋 템플릿 | 미리 정의된 템플릿 |
+| 📋 템플릿 | 미리 정의된 프롬프트 템플릿 선택 |
+| 🌐 번역 | 한국어 → 영어 자동 번역 |
+| ✨ AI 향상 | 간단한 프롬프트를 상세하게 확장 |
 
-### 4. 미리보기 모드
+### 4. 추천 워크플로우
 
-- 빠른 테스트를 위해 256x256 저해상도로 생성
-- 프롬프트 확인 후 본 생성 진행
+1. **미리보기**로 프롬프트 빠르게 테스트 (256×256)
+2. 마음에 드는 시드 기록
+3. 프롬프트 수정 → 다시 테스트
+4. 최종 확정 후 **생성**으로 고해상도 이미지 생성
+5. 좋은 프롬프트는 **즐겨찾기**에 저장
 
 ---
 
@@ -186,14 +217,16 @@ pip install -r requirements-upscale.txt
 
 1. **설정** 탭에서 LLM Provider 선택
 2. API 키 입력
-3. (선택) 커스텀 Base URL, 모델 지정
+3. 모델 선택 (또는 직접 입력)
+4. **LLM 설정 저장** 클릭
 
-**지원 Provider:**
-- OpenAI: `api.openai.com`
-- Groq: `api.groq.com`
-- Together AI: `api.together.xyz`
-- Ollama: `localhost:11434` (로컬)
-- LM Studio: `localhost:1234` (로컬)
+**추천 Provider:**
+
+| Provider | 장점 | API 키 |
+|----------|------|--------|
+| **Groq** | 무료, 매우 빠름 | [console.groq.com](https://console.groq.com) |
+| OpenAI | 안정적, 고품질 | [platform.openai.com](https://platform.openai.com) |
+| Ollama | 로컬, 무료 | 불필요 |
 
 ### 자동 언로드 설정
 
@@ -201,6 +234,10 @@ VRAM 절약을 위해 비활성 시 모델 자동 언로드:
 
 - **활성화/비활성화**: 설정에서 토글
 - **타임아웃**: 1~1440분 (기본 10분)
+
+### 시스템 프롬프트 설정
+
+번역 및 AI 향상 시 LLM에게 전달되는 지시사항을 커스터마이징할 수 있습니다.
 
 ### 파일명 패턴
 
@@ -211,6 +248,25 @@ VRAM 절약을 위해 비활성 시 모델 자동 언로드:
 | `{date}_{time}_{seed}` | 20241211_143052_123456.png |
 | `{prompt_short}_{seed}` | beautiful_landscape_123456.png |
 | `image_{counter}_{seed}` | image_001_123456.png |
+
+---
+
+## 💡 프로 팁
+
+### 좋은 프롬프트 작성법
+
+1. **구체적으로:** "고양이" → "털이 복슬복슬한 주황색 고양이"
+2. **스타일 지정:** "oil painting style", "anime style", "photorealistic"
+3. **품질 태그 추가:** "high quality", "detailed", "8K", "masterpiece"
+4. **조명 설명:** "soft natural lighting", "dramatic shadows", "golden hour"
+5. **구도 설명:** "close-up portrait", "wide angle shot", "bird's eye view"
+
+### VRAM 절약 팁
+
+1. 자동 언로드 기능 활성화
+2. 필요할 때만 모델 로드
+3. 양자화 모델(Q4_K_M 등) 사용
+4. CPU 오프로딩 활성화
 
 ---
 
@@ -237,6 +293,7 @@ Z-Image_WebUI/
 │   └── js/app.js          # 프론트엔드 JavaScript
 ├── templates/
 │   └── index.html         # 메인 HTML 템플릿
+├── Assets/                # 스크린샷 이미지
 ├── data/                  # 사용자 데이터 (자동 생성)
 │   ├── settings.yaml
 │   ├── history.json
@@ -244,6 +301,7 @@ Z-Image_WebUI/
 ├── outputs/               # 생성된 이미지 저장
 ├── requirements.txt       # 메인 의존성
 ├── requirements-upscale.txt # 업스케일링 의존성
+├── HowToUse.md            # 상세 사용 가이드
 ├── Setup.bat              # Windows 설치 스크립트
 └── Run.bat                # Windows 실행 스크립트
 ```
@@ -264,12 +322,13 @@ pip install --force-reinstall git+https://github.com/huggingface/diffusers
 1. 더 낮은 양자화 옵션 선택 (Q4_K_S, Q3_K_M 등)
 2. CPU 오프로딩 활성화
 3. 해상도 낮추기
+4. 다른 GPU 사용 프로그램 종료
 
 ### 번역/향상 기능 미작동
 
 1. 설정에서 LLM API 키 확인
-2. API 키 잔액/유효성 확인
-3. 네트워크 연결 확인
+2. Provider가 올바르게 선택되었는지 확인
+3. 인터넷 연결 확인
 
 ### Windows에서 Real-ESRGAN 설치 오류
 
@@ -330,5 +389,6 @@ python inference.py
 
 **Made with ❤️ for AI Art Creators**
 
-</div>
+[📚 상세 사용 가이드 보기](HowToUse.md)
 
+</div>
