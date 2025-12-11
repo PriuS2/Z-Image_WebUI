@@ -1335,3 +1335,68 @@ body {
     margin-bottom: 16px;
     line-height: 1.5;
 }
+
+/* ============= 제작자 정보 섹션 ============= */
+.about-section {
+    background: linear-gradient(135deg, var(--bg-secondary) 0%, rgba(99, 102, 241, 0.05) 100%);
+    border-color: rgba(99, 102, 241, 0.3);
+}
+
+.about-content {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.about-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    transition: all 0.2s;
+}
+
+.about-item:hover {
+    background: var(--bg-hover);
+    transform: translateX(4px);
+}
+
+.about-item > i {
+    font-size: 20px;
+    color: var(--accent);
+    width: 24px;
+    text-align: center;
+}
+
+.about-label {
+    color: var(--text-secondary);
+    font-size: 14px;
+    min-width: 80px;
+}
+
+.about-item a {
+    color: var(--text-primary);
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(99, 102, 241, 0.1);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.about-item a:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.about-item a i {
+    font-size: 16px;
+}
