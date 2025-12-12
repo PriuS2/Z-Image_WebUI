@@ -390,6 +390,8 @@ function addMessage(type, content, style = '') {
     messageDiv.appendChild(contentDiv);
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    
+    return messageDiv;
 }
 
 function addImageMessage(images, prompt) {
@@ -1231,11 +1233,20 @@ async function updateModelDownloadStatus() {
 }
 
 // ============= 갤러리 =============
+// 갤러리 데이터 저장 (다운로드용)
+let galleryData = {
+    images: [],
+    groups: []
+};
+
 async function loadGallery() {
     try {
         const result = await apiCall('/gallery');
         const grid = document.getElementById('galleryGrid');
         grid.innerHTML = '';
+        
+        // 갤러리 데이터 저장
+        galleryData.images = result.images;
         
         // 갤러리 이미지 목록 생성 (네비게이션용)
         const galleryImageList = result.images.map(img => ({
@@ -1255,9 +1266,375 @@ async function loadGallery() {
             item.onclick = () => showImageModalWithList(galleryImageList, index);
             grid.appendChild(item);
         });
+        
+        // 다운로드 메뉴 업데이트
+        updateGalleryDownloadMenu(result.images);
+        
     } catch (error) {
         console.error('갤러리 로드 실패:', error);
     }
+}
+
+// 갤러리 다운로드 메뉴 업데이트
+function updateGalleryDownloadMenu(images) {
+    const countEl = document.getElementById('downloadAllCount');
+    const groupListEl = document.getElementById('galleryGroupList');
+    
+    // 전체 개수 표시
+    if (countEl) {
+        countEl.textContent = `${images.length}장`;
+    }
+    
+    // 생성 프로세스별 그룹핑
+    const groups = groupImagesByProcess(images);
+    galleryData.groups = groups;
+    
+    // 그룹 목록 렌더링
+    if (groupListEl) {
+        if (groups.length === 0) {
+            groupListEl.innerHTML = '<div class="dropdown-empty">이미지가 없습니다</div>';
+        } else {
+            groupListEl.innerHTML = groups.map((group, index) => `
+                <button class="dropdown-group-item" onclick="downloadGalleryGroup(${index})" data-prompt="${escapeHtml(group.prompt)}">
+                    <div class="group-thumbnail">
+                        <img src="${group.thumbnail}" alt="미리보기">
+                    </div>
+                    <div class="group-info">
+                        <div class="group-prompt">${escapeHtml(group.promptShort)}</div>
+                    </div>
+                    <span class="group-count">${group.images.length}장</span>
+                </button>
+            `).join('');
+            
+            // 툴팁 이벤트 추가
+            groupListEl.querySelectorAll('.dropdown-group-item').forEach(item => {
+                item.addEventListener('mouseenter', showGroupTooltip);
+                item.addEventListener('mouseleave', hideGroupTooltip);
+                item.addEventListener('mousemove', moveGroupTooltip);
+            });
+        }
+    }
+}
+
+// 그룹 툴팁 표시
+function showGroupTooltip(e) {
+    const prompt = e.currentTarget.dataset.prompt;
+    if (!prompt) return;
+    
+    let tooltip = document.getElementById('groupTooltip');
+    if (!tooltip) {
+        tooltip = document.createElement('div');
+        tooltip.id = 'groupTooltip';
+        tooltip.className = 'floating-tooltip';
+        document.body.appendChild(tooltip);
+    }
+    
+    tooltip.textContent = prompt;
+    tooltip.style.display = 'block';
+    
+    positionTooltip(tooltip, e);
+}
+
+// 툴팁 위치 조정
+function positionTooltip(tooltip, e) {
+    const padding = 15;
+    const tooltipWidth = 300;
+    
+    let x = e.clientX - tooltipWidth - padding;
+    let y = e.clientY;
+    
+    // 왼쪽 화면 경계 체크
+    if (x < padding) {
+        x = e.clientX + padding;
+    }
+    
+    // 하단 경계 체크
+    const tooltipHeight = tooltip.offsetHeight || 100;
+    if (y + tooltipHeight > window.innerHeight - padding) {
+        y = window.innerHeight - tooltipHeight - padding;
+    }
+    
+    tooltip.style.left = x + 'px';
+    tooltip.style.top = y + 'px';
+}
+
+// 툴팁 이동
+function moveGroupTooltip(e) {
+    const tooltip = document.getElementById('groupTooltip');
+    if (tooltip && tooltip.style.display === 'block') {
+        positionTooltip(tooltip, e);
+    }
+}
+
+// 툴팁 숨김
+function hideGroupTooltip() {
+    const tooltip = document.getElementById('groupTooltip');
+    if (tooltip) {
+        tooltip.style.display = 'none';
+    }
+}
+
+// 이미지를 프롬프트별로 그룹핑
+function groupImagesByProcess(images) {
+    const groups = [];
+    const groupMap = new Map();
+    
+    images.forEach(img => {
+        const metadata = img.metadata || {};
+        const prompt = metadata.prompt || 'unknown';
+        
+        // 프롬프트를 그룹 키로 사용 (공백 정규화)
+        const groupKey = prompt.trim().toLowerCase();
+        
+        if (!groupMap.has(groupKey)) {
+            groupMap.set(groupKey, {
+                prompt: prompt,
+                promptShort: prompt.length > 35 ? prompt.substring(0, 35) + '...' : prompt,
+                thumbnail: img.path, // 첫 번째 이미지를 썸네일로
+                images: []
+            });
+        }
+        
+        groupMap.get(groupKey).images.push(img);
+    });
+    
+    // Map을 배열로 변환하고 이미지 개수순 정렬 (많은 순)
+    groupMap.forEach((group, key) => {
+        groups.push(group);
+    });
+    
+    groups.sort((a, b) => b.images.length - a.images.length);
+    
+    return groups;
+}
+
+// 시간 키 포맷팅
+function formatTimeKey(timeKey) {
+    if (!timeKey || timeKey === 'unknown') return '알 수 없음';
+    
+    // YYYYMMDD_HHMMSS 형식
+    const match = timeKey.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})?/);
+    if (match) {
+        const [, year, month, day, hour, minute] = match;
+        return `${month}/${day} ${hour}:${minute}`;
+    }
+    return timeKey;
+}
+
+// 갤러리 전체 다운로드
+async function downloadAllGalleryImages() {
+    if (galleryData.images.length === 0) {
+        alert('다운로드할 이미지가 없습니다.');
+        return;
+    }
+    
+    closeGalleryDropdown();
+    
+    const images = galleryData.images.map(img => ({
+        path: img.path,
+        seed: img.metadata?.seed || 0
+    }));
+    
+    await downloadImagesAsZipWithStatus(images, 'gallery_all', '갤러리 전체');
+}
+
+// 갤러리 그룹별 다운로드
+async function downloadGalleryGroup(groupIndex) {
+    const group = galleryData.groups[groupIndex];
+    if (!group || group.images.length === 0) {
+        alert('다운로드할 이미지가 없습니다.');
+        return;
+    }
+    
+    closeGalleryDropdown();
+    
+    const images = group.images.map(img => ({
+        path: img.path,
+        seed: img.metadata?.seed || 0
+    }));
+    
+    const promptShort = group.prompt.substring(0, 30).replace(/[^a-zA-Z0-9가-힣]/g, '_');
+    await downloadImagesAsZipWithStatus(images, `gallery_${promptShort}`, group.promptShort);
+}
+
+// 상태 표시와 함께 ZIP 다운로드 (갤러리용)
+async function downloadImagesAsZipWithStatus(images, prefix, description) {
+    if (typeof JSZip === 'undefined') {
+        alert('ZIP 라이브러리를 불러오지 못했습니다. 페이지를 새로고침해주세요.');
+        return;
+    }
+    
+    // 진행 상태 알림
+    const statusDiv = document.createElement('div');
+    statusDiv.className = 'download-status-toast';
+    statusDiv.innerHTML = `
+        <div class="download-status-content">
+            <i class="ri-download-2-line"></i>
+            <span id="downloadStatusText">📦 ${images.length}장의 이미지를 다운로드 준비 중...</span>
+        </div>
+    `;
+    document.body.appendChild(statusDiv);
+    
+    const statusText = document.getElementById('downloadStatusText');
+    
+    try {
+        const zip = new JSZip();
+        const folder = zip.folder('images');
+        
+        let successCount = 0;
+        for (let i = 0; i < images.length; i++) {
+            const img = images[i];
+            try {
+                statusText.textContent = `📦 다운로드 중... (${i + 1}/${images.length})`;
+                
+                const response = await fetch(img.path);
+                const blob = await response.blob();
+                
+                const filename = img.path.split('/').pop() || `image_${i + 1}.png`;
+                folder.file(filename, blob);
+                successCount++;
+            } catch (error) {
+                console.error(`이미지 ${i + 1} 다운로드 실패:`, error);
+            }
+        }
+        
+        if (successCount === 0) {
+            statusText.textContent = '❌ 이미지 다운로드에 실패했습니다.';
+            setTimeout(() => statusDiv.remove(), 3000);
+            return;
+        }
+        
+        statusText.textContent = `📦 ZIP 파일 생성 중... (${successCount}장)`;
+        
+        const content = await zip.generateAsync({ type: 'blob' });
+        
+        // 파일명 생성
+        const date = new Date();
+        const dateStr = `${date.getFullYear()}${(date.getMonth()+1).toString().padStart(2,'0')}${date.getDate().toString().padStart(2,'0')}`;
+        const timeStr = `${date.getHours().toString().padStart(2,'0')}${date.getMinutes().toString().padStart(2,'0')}`;
+        const zipFilename = `${prefix}_${dateStr}_${timeStr}.zip`;
+        
+        // 다운로드
+        const url = URL.createObjectURL(content);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = zipFilename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        statusText.textContent = `✅ ${successCount}장 다운로드 완료!`;
+        setTimeout(() => statusDiv.remove(), 2000);
+        
+    } catch (error) {
+        console.error('ZIP 생성 실패:', error);
+        statusText.textContent = `❌ ZIP 생성 실패: ${error.message}`;
+        setTimeout(() => statusDiv.remove(), 3000);
+    }
+}
+
+// 갤러리 드롭다운 토글
+function toggleGalleryDropdown() {
+    const dropdown = document.getElementById('galleryDownloadDropdown');
+    dropdown.classList.toggle('open');
+}
+
+function closeGalleryDropdown() {
+    const dropdown = document.getElementById('galleryDownloadDropdown');
+    dropdown.classList.remove('open');
+}
+
+// ============= 갤러리에서 이미지 선택 (편집용) =============
+async function openGallerySelectModal() {
+    const modal = document.getElementById('gallerySelectModal');
+    const grid = document.getElementById('gallerySelectGrid');
+    
+    if (!modal || !grid) return;
+    
+    // 갤러리 데이터 로드
+    try {
+        const result = await apiCall('/gallery');
+        
+        if (result.images.length === 0) {
+            grid.innerHTML = '<div class="gallery-select-empty"><i class="ri-image-line"></i><p>갤러리에 이미지가 없습니다.</p></div>';
+        } else {
+            grid.innerHTML = result.images.map(img => `
+                <div class="gallery-select-item" data-path="${img.path}">
+                    <img src="${img.path}" alt="${img.filename}">
+                    <div class="select-overlay">
+                        <span>${img.filename}</span>
+                    </div>
+                </div>
+            `).join('');
+            
+            // 클릭 이벤트 추가
+            grid.querySelectorAll('.gallery-select-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    selectImageFromGallery(item.dataset.path);
+                });
+            });
+        }
+        
+        modal.classList.add('active');
+        
+    } catch (error) {
+        console.error('갤러리 로드 실패:', error);
+        addEditMessage('system', `❌ 갤러리 로드 실패: ${error.message}`);
+    }
+}
+
+// 갤러리에서 이미지 선택
+function selectImageFromGallery(imagePath) {
+    // 모달 닫기
+    closeModal('gallerySelectModal');
+    
+    // 이미지를 편집 탭에 로드
+    loadImageToEditTab(imagePath);
+}
+
+// 이미지를 편집 탭에 로드
+async function loadImageToEditTab(imagePath) {
+    try {
+        // 이미지를 fetch하여 File 객체로 변환
+        const response = await fetch(imagePath);
+        const blob = await response.blob();
+        const filename = imagePath.split('/').pop() || 'image.png';
+        editImageFile = new File([blob], filename, { type: blob.type });
+        
+        // 미리보기 표시
+        const preview = document.getElementById('editUploadPreview');
+        const placeholder = document.getElementById('editUploadPlaceholder');
+        const img = document.getElementById('editPreviewImage');
+        
+        img.src = imagePath;
+        preview.style.display = 'block';
+        placeholder.style.display = 'none';
+        
+        addEditMessage('system', '✅ 이미지가 로드되었습니다. 편집 지시어를 입력하세요.');
+        
+    } catch (error) {
+        console.error('이미지 로드 실패:', error);
+        addEditMessage('system', `❌ 이미지 로드 실패: ${error.message}`);
+    }
+}
+
+// 이미지 뷰어에서 편집 탭으로 이동
+function editCurrentImage() {
+    const currentPath = imagePreviewState.currentPath;
+    if (!currentPath) {
+        alert('편집할 이미지가 없습니다.');
+        return;
+    }
+    
+    // 모달 닫기
+    closeImageModal();
+    
+    // 편집 탭으로 전환
+    switchTab('edit');
+    
+    // 이미지 로드
+    loadImageToEditTab(currentPath);
 }
 
 // ============= 히스토리 =============
@@ -2162,6 +2539,86 @@ function downloadPreviewImage() {
     }
 }
 
+// 여러 이미지를 ZIP으로 묶어서 다운로드
+async function downloadImagesAsZip(images, prompt) {
+    // JSZip 라이브러리 확인
+    if (typeof JSZip === 'undefined') {
+        alert('ZIP 라이브러리를 불러오지 못했습니다. 페이지를 새로고침해주세요.');
+        return;
+    }
+    
+    const zip = new JSZip();
+    const folder = zip.folder('images');
+    
+    // 다운로드 진행 상태 표시
+    const statusMsg = addMessage('system', `📦 ${images.length}장의 이미지를 다운로드 준비 중...`);
+    
+    try {
+        // 각 이미지를 fetch하여 ZIP에 추가
+        const fetchPromises = images.map(async (img, index) => {
+            try {
+                const response = await fetch(img.path);
+                const blob = await response.blob();
+                
+                // 파일명 생성 (시드 포함)
+                const filename = img.path.split('/').pop() || `image_${index + 1}_seed${img.seed}.png`;
+                folder.file(filename, blob);
+                
+                return true;
+            } catch (error) {
+                console.error(`이미지 ${index + 1} 다운로드 실패:`, error);
+                return false;
+            }
+        });
+        
+        const results = await Promise.all(fetchPromises);
+        const successCount = results.filter(r => r).length;
+        
+        if (successCount === 0) {
+            updateMessageText(statusMsg, '❌ 이미지 다운로드에 실패했습니다.');
+            return;
+        }
+        
+        // ZIP 파일 생성
+        updateMessageText(statusMsg, `📦 ZIP 파일 생성 중... (${successCount}/${images.length}장)`);
+        
+        const content = await zip.generateAsync({ type: 'blob' });
+        
+        // 파일명 생성 (날짜 + 프롬프트 일부)
+        const date = new Date();
+        const dateStr = `${date.getFullYear()}${(date.getMonth()+1).toString().padStart(2,'0')}${date.getDate().toString().padStart(2,'0')}`;
+        const timeStr = `${date.getHours().toString().padStart(2,'0')}${date.getMinutes().toString().padStart(2,'0')}`;
+        const promptShort = prompt.substring(0, 30).replace(/[^a-zA-Z0-9]/g, '_');
+        const zipFilename = `images_${dateStr}_${timeStr}_${promptShort}.zip`;
+        
+        // 다운로드 링크 생성
+        const url = URL.createObjectURL(content);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = zipFilename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        updateMessageText(statusMsg, `✅ ${successCount}장의 이미지가 ZIP 파일로 다운로드되었습니다.`);
+        
+    } catch (error) {
+        console.error('ZIP 생성 실패:', error);
+        updateMessageText(statusMsg, `❌ ZIP 생성 실패: ${error.message}`);
+    }
+}
+
+// 메시지 텍스트 업데이트 헬퍼
+function updateMessageText(messageEl, text) {
+    if (messageEl) {
+        const contentEl = messageEl.querySelector('.message-content p');
+        if (contentEl) {
+            contentEl.textContent = text;
+        }
+    }
+}
+
 function closeImageModal() {
     const modal = document.getElementById('imageModal');
     modal.classList.remove('active');
@@ -2495,6 +2952,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // 갤러리
     document.getElementById('btnRefreshGallery').addEventListener('click', loadGallery);
     
+    // 갤러리 다운로드 드롭다운
+    document.getElementById('btnGalleryDownload').addEventListener('click', toggleGalleryDropdown);
+    document.getElementById('btnDownloadAll').addEventListener('click', downloadAllGalleryImages);
+    
+    // 드롭다운 외부 클릭 시 닫기
+    document.addEventListener('click', (e) => {
+        const dropdown = document.getElementById('galleryDownloadDropdown');
+        if (dropdown && !dropdown.contains(e.target)) {
+            dropdown.classList.remove('open');
+        }
+    });
+    
     // 히스토리
     document.getElementById('btnClearHistory').addEventListener('click', clearHistory);
     
@@ -2521,6 +2990,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btnZoomFit').addEventListener('click', zoomToFit);
     document.getElementById('btnZoomOriginal').addEventListener('click', zoomToOriginal);
     document.getElementById('btnDownloadImage').addEventListener('click', downloadPreviewImage);
+    document.getElementById('btnEditThisImage').addEventListener('click', editCurrentImage);
     
     // 이미지 네비게이션 버튼
     document.getElementById('btnPrevImage').addEventListener('click', (e) => {
@@ -2765,6 +3235,15 @@ function initEditTab() {
     
     // 양자화 옵션 로드
     loadEditQuantizationOptions();
+    
+    // 갤러리에서 선택 버튼
+    const btnSelectFromGallery = document.getElementById('btnSelectFromGallery');
+    if (btnSelectFromGallery) {
+        btnSelectFromGallery.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openGallerySelectModal();
+        });
+    }
 }
 
 
