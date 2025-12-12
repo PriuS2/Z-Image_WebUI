@@ -32,11 +32,13 @@ from PIL import Image
 # 로컬 모듈
 from config.defaults import (
     QUANTIZATION_OPTIONS,
+    EDIT_QUANTIZATION_OPTIONS,
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
     SERVER_HOST,
     SERVER_PORT,
     SERVER_RELOAD,
+    LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT,
 )
 from config.templates import PROMPT_TEMPLATES
 from utils.settings import settings
@@ -48,6 +50,9 @@ from utils.favorites import get_favorites_manager_sync, FavoritesManager
 from utils.upscaler import upscaler, REALESRGAN_AVAILABLE
 from utils.session import session_manager, is_localhost, SessionManager, SessionInfo
 from utils.queue_manager import generation_queue, GenerationQueueManager
+from utils.longcat_edit import longcat_edit_manager
+from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager
+from utils.edit_llm import edit_translator, edit_enhancer, edit_suggester
 
 
 # ============= 전역 변수 =============
@@ -57,6 +62,11 @@ device = None
 last_activity_time = time.time()  # 마지막 활동 시간
 auto_unload_task = None  # 자동 언로드 체크 태스크
 model_lock = asyncio.Lock()  # 모델 로드/언로드 잠금
+
+# LongCat-Image-Edit 관련
+edit_last_activity_time = time.time()  # 편집 모델 마지막 활동 시간
+edit_auto_unload_task = None  # 편집 모델 자동 언로드 태스크
+edit_model_lock = asyncio.Lock()  # 편집 모델 로드/언로드 잠금
 
 
 # ============= 자동 언로드 관련 함수 =============
@@ -219,6 +229,40 @@ class EnhanceRequest(BaseModel):
 
 
 class ConversationUpdateRequest(BaseModel):
+    conversation: List[Dict[str, Any]]
+
+
+# ============= 편집 관련 Pydantic 모델 =============
+class EditModelLoadRequest(BaseModel):
+    quantization: str = "BF16 (기본, 최고품질)"
+    model_path: str = ""
+    cpu_offload: bool = True  # 기본 활성화 (VRAM 절약)
+
+
+class EditGenerateRequest(BaseModel):
+    prompt: str
+    korean_prompt: str = ""
+    steps: int = 50
+    guidance_scale: float = 4.5
+    seed: int = -1
+    num_images: int = 1
+    auto_translate: bool = True
+
+
+class EditTranslateRequest(BaseModel):
+    text: str
+
+
+class EditEnhanceRequest(BaseModel):
+    instruction: str
+
+
+class EditSuggestRequest(BaseModel):
+    context: str = ""
+    image_description: str = ""
+
+
+class EditConversationUpdateRequest(BaseModel):
     conversation: List[Dict[str, Any]]
 
 
@@ -1171,7 +1215,7 @@ async def get_settings(request: Request):
         # 레거시 호환
         "openai_api_key": "***" if settings.get("openai_api_key") else "",
         # LLM Provider 설정
-        "llm_provider": settings.get("llm_provider", "openai"),
+        "llm_provider": settings.get("llm_provider", "env"),
         "llm_api_key": "***" if settings.get("llm_api_key") else "",
         "llm_base_url": settings.get("llm_base_url", ""),
         "llm_model": settings.get("llm_model", ""),
@@ -1300,6 +1344,13 @@ async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str
             "current_model": current_model
         })
         
+        # 편집 모델 상태 전송
+        await websocket.send_json({
+            "type": "edit_model_status_change",
+            "model_loaded": longcat_edit_manager.is_loaded,
+            "current_model": longcat_edit_manager.current_model
+        })
+        
         # 접속자 수 브로드캐스트
         await ws_manager.broadcast({
             "type": "user_count",
@@ -1327,6 +1378,400 @@ async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str
             "type": "user_count",
             "count": ws_manager.get_session_count()
         })
+
+
+# ============= LongCat-Image-Edit API =============
+
+def update_edit_activity():
+    """편집 모델 마지막 활동 시간 업데이트"""
+    global edit_last_activity_time
+    edit_last_activity_time = time.time()
+
+
+@app.get("/api/edit/status")
+async def get_edit_status(request: Request):
+    """편집 모델 상태"""
+    update_edit_activity()
+    
+    session = await get_session_from_request(request)
+    
+    return {
+        "model_loaded": longcat_edit_manager.is_loaded,
+        "current_model": longcat_edit_manager.current_model,
+        "device": longcat_edit_manager.device or longcat_edit_manager.get_device(),
+        "vram": get_vram_info(),
+        "session_id": session.session_id,
+        "quantization_options": list(EDIT_QUANTIZATION_OPTIONS.keys()),
+    }
+
+
+@app.post("/api/edit/model/load")
+async def load_edit_model(request: Request, model_request: EditModelLoadRequest):
+    """LongCat-Image-Edit 모델 로드"""
+    global edit_model_lock
+    
+    if edit_model_lock.locked():
+        raise HTTPException(409, "다른 사용자가 모델을 로드/언로드 중입니다.")
+    
+    async with edit_model_lock:
+        async def progress_callback(percent, label, detail):
+            await ws_manager.broadcast({
+                "type": "edit_model_progress",
+                "progress": percent,
+                "label": label,
+                "detail": detail,
+                "stage": "loading" if percent < 100 else "complete"
+            })
+        
+        try:
+            await ws_manager.broadcast({
+                "type": "edit_model_progress",
+                "progress": 0,
+                "label": "🔧 편집 모델 로드 시작...",
+                "detail": "",
+                "stage": "init"
+            })
+            
+            success, message = await longcat_edit_manager.load_model(
+                quantization=model_request.quantization,
+                cpu_offload=model_request.cpu_offload,
+                model_path=model_request.model_path if model_request.model_path else None,
+                progress_callback=progress_callback
+            )
+            
+            if success:
+                await ws_manager.broadcast({
+                    "type": "edit_model_status_change",
+                    "model_loaded": True,
+                    "current_model": longcat_edit_manager.current_model
+                })
+                await ws_manager.broadcast({
+                    "type": "complete",
+                    "content": f"✅ 편집 모델 로드 완료!"
+                })
+                return {"success": True, "message": message}
+            else:
+                await ws_manager.broadcast({
+                    "type": "edit_model_progress",
+                    "progress": 0,
+                    "label": "❌ 로드 실패",
+                    "detail": message,
+                    "stage": "error"
+                })
+                raise HTTPException(500, message)
+                
+        except Exception as e:
+            await ws_manager.broadcast({
+                "type": "error",
+                "content": f"❌ 편집 모델 로드 실패: {str(e)}"
+            })
+            raise HTTPException(500, str(e))
+
+
+@app.post("/api/edit/model/unload")
+async def unload_edit_model(request: Request):
+    """LongCat-Image-Edit 모델 언로드"""
+    global edit_model_lock
+    
+    if edit_model_lock.locked():
+        raise HTTPException(409, "다른 사용자가 모델을 로드/언로드 중입니다.")
+    
+    async with edit_model_lock:
+        try:
+            await ws_manager.broadcast({
+                "type": "edit_model_progress",
+                "progress": 50,
+                "label": "편집 모델 언로드 중...",
+                "detail": ""
+            })
+            
+            success, message = await longcat_edit_manager.unload_model()
+            
+            await ws_manager.broadcast({
+                "type": "edit_model_progress",
+                "progress": 100,
+                "label": "언로드 완료!",
+                "detail": f"VRAM: {get_vram_info()}"
+            })
+            
+            await ws_manager.broadcast({
+                "type": "edit_model_status_change",
+                "model_loaded": False,
+                "current_model": None
+            })
+            
+            await ws_manager.broadcast({
+                "type": "complete",
+                "content": "✅ 편집 모델 언로드 완료!"
+            })
+            
+            return {"success": success, "message": message}
+            
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+
+@app.post("/api/edit/generate")
+async def edit_image(request: Request, edit_request: EditGenerateRequest, image: UploadFile = File(...), reference_image: Optional[UploadFile] = File(None)):
+    """이미지 편집 실행"""
+    update_edit_activity()
+    
+    session = await get_session_from_request(request)
+    
+    if not longcat_edit_manager.is_loaded:
+        raise HTTPException(400, "편집 모델이 로드되지 않았습니다.")
+    
+    if not edit_request.prompt.strip():
+        raise HTTPException(400, "편집 프롬프트를 입력해주세요.")
+    
+    try:
+        # 이미지 로드
+        image_data = await image.read()
+        pil_image = Image.open(BytesIO(image_data)).convert("RGB")
+        
+        # 참조 이미지 로드 (있으면)
+        ref_image = None
+        if reference_image:
+            ref_data = await reference_image.read()
+            ref_image = Image.open(BytesIO(ref_data)).convert("RGB")
+        
+        # 프롬프트 번역
+        final_prompt = edit_request.prompt
+        if edit_request.auto_translate and edit_translator.is_korean(edit_request.prompt):
+            await ws_manager.send_to_session(session.session_id, {
+                "type": "system",
+                "content": "🌐 편집 지시어 번역 중..."
+            })
+            final_prompt, success = edit_translator.translate(edit_request.prompt)
+            if not success:
+                await ws_manager.send_to_session(session.session_id, {
+                    "type": "warning",
+                    "content": "⚠️ 번역 실패, 원문 사용"
+                })
+        
+        # 편집 시작 메시지
+        await ws_manager.send_to_session(session.session_id, {
+            "type": "system",
+            "content": "🎨 이미지 편집 중..."
+        })
+        
+        # 편집 실행
+        success, results, message = await longcat_edit_manager.edit_image(
+            image=pil_image,
+            prompt=final_prompt,
+            num_inference_steps=edit_request.steps,
+            guidance_scale=edit_request.guidance_scale,
+            seed=edit_request.seed,
+            num_images=edit_request.num_images,
+            reference_image=ref_image
+        )
+        
+        if not success:
+            raise HTTPException(500, message)
+        
+        # 세션별 출력 디렉토리
+        outputs_dir = session.get_outputs_dir()
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 결과 저장 및 반환
+        images_response = []
+        result_paths = []
+        
+        for i, result in enumerate(results):
+            result_image = result["image"]
+            seed = result["seed"]
+            
+            # 파일명 생성
+            filename = filename_generator.generate(
+                pattern=settings.get("filename_pattern", "{date}_{time}_{seed}"),
+                prompt=final_prompt,
+                seed=seed
+            )
+            filename = f"edit_{filename}"
+            output_path = outputs_dir / filename
+            
+            # 메타데이터와 함께 저장
+            metadata = ImageMetadata.create_metadata(
+                prompt=final_prompt,
+                seed=seed,
+                width=result_image.width,
+                height=result_image.height,
+                steps=edit_request.steps,
+                guidance_scale=edit_request.guidance_scale,
+                model="LongCat-Image-Edit",
+            )
+            ImageMetadata.save_with_metadata(result_image, output_path, metadata)
+            
+            result_paths.append(str(output_path))
+            images_response.append({
+                "base64": image_to_base64(result_image),
+                "filename": filename,
+                "seed": seed,
+                "path": f"/outputs/{session.session_id}/{filename}"
+            })
+        
+        # 히스토리 저장
+        edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+        history_entry = edit_history_mgr.add(
+            prompt=final_prompt,
+            korean_prompt=edit_request.korean_prompt,
+            settings={
+                "steps": edit_request.steps,
+                "guidance_scale": edit_request.guidance_scale,
+                "seed": results[0]["seed"] if results else -1,
+            },
+            result_image_paths=[img["path"] for img in images_response]
+        )
+        
+        # 완료 메시지
+        await ws_manager.send_to_session(session.session_id, {
+            "type": "complete",
+            "content": f"✅ 편집 완료! (시드: {results[0]['seed'] if results else 'N/A'})"
+        })
+        
+        # 결과 전송
+        await ws_manager.send_to_session(session.session_id, {
+            "type": "edit_result",
+            "images": images_response,
+            "seed": results[0]["seed"] if results else -1,
+            "prompt": final_prompt,
+            "history_id": history_entry.id
+        })
+        
+        return {
+            "success": True,
+            "images": images_response,
+            "seed": results[0]["seed"] if results else -1,
+            "prompt": final_prompt,
+            "history_id": history_entry.id
+        }
+        
+    except Exception as e:
+        await ws_manager.send_to_session(session.session_id, {
+            "type": "error",
+            "content": f"❌ 편집 오류: {str(e)}"
+        })
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/edit/translate")
+async def translate_edit_instruction(request: Request, trans_request: EditTranslateRequest):
+    """편집 지시어 번역"""
+    update_edit_activity()
+    from utils.llm_client import llm_client
+    
+    if not llm_client.is_available:
+        raise HTTPException(400, "LLM API가 설정되지 않았습니다.")
+    
+    translated, success = edit_translator.translate(trans_request.text)
+    return {"success": success, "translated": translated}
+
+
+@app.post("/api/edit/enhance")
+async def enhance_edit_instruction(request: Request, enhance_request: EditEnhanceRequest):
+    """편집 지시어 향상"""
+    update_edit_activity()
+    from utils.llm_client import llm_client
+    
+    if not llm_client.is_available:
+        raise HTTPException(400, "LLM API가 설정되지 않았습니다.")
+    
+    enhanced, success = edit_enhancer.enhance(enhance_request.instruction)
+    return {"success": success, "enhanced": enhanced}
+
+
+@app.post("/api/edit/suggest")
+async def suggest_edits(request: Request, suggest_request: EditSuggestRequest):
+    """편집 아이디어 제안"""
+    update_edit_activity()
+    from utils.llm_client import llm_client
+    
+    if not llm_client.is_available:
+        raise HTTPException(400, "LLM API가 설정되지 않았습니다.")
+    
+    suggestions, success = edit_suggester.suggest(
+        context=suggest_request.context,
+        image_description=suggest_request.image_description
+    )
+    
+    # 한국어 제안도 함께 반환
+    korean_suggestions, _ = edit_suggester.suggest_korean(
+        context=suggest_request.context,
+        image_description=suggest_request.image_description
+    )
+    
+    return {
+        "success": success,
+        "suggestions": suggestions,
+        "suggestions_korean": korean_suggestions
+    }
+
+
+# ============= 편집 히스토리 API =============
+@app.get("/api/edit/history")
+async def get_edit_history(request: Request):
+    """편집 히스토리 목록"""
+    session = await get_session_from_request(request)
+    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    entries = edit_history_mgr.get_all()
+    
+    response = JSONResponse(content={"history": [e.to_dict() for e in entries[:50]]})
+    set_session_cookie(response, session)
+    return response
+
+
+@app.get("/api/edit/history/{history_id}")
+async def get_edit_history_detail(history_id: str, request: Request):
+    """편집 히스토리 상세 정보"""
+    session = await get_session_from_request(request)
+    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    entry = edit_history_mgr.get_by_id(history_id)
+    
+    if not entry:
+        raise HTTPException(404, "편집 히스토리를 찾을 수 없습니다.")
+    
+    return {"history": entry.to_dict()}
+
+
+@app.get("/api/edit/history/{history_id}/chain")
+async def get_edit_history_chain(history_id: str, request: Request):
+    """멀티턴 편집 체인 가져오기"""
+    session = await get_session_from_request(request)
+    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    chain = edit_history_mgr.get_chain(history_id)
+    
+    return {"chain": [e.to_dict() for e in chain]}
+
+
+@app.patch("/api/edit/history/{history_id}/conversation")
+async def update_edit_history_conversation(history_id: str, request: Request, conv_request: EditConversationUpdateRequest):
+    """편집 히스토리 대화 내용 업데이트"""
+    session = await get_session_from_request(request)
+    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    
+    success = edit_history_mgr.update_conversation(history_id, conv_request.conversation)
+    if not success:
+        raise HTTPException(404, "편집 히스토리를 찾을 수 없습니다.")
+    
+    return {"success": True}
+
+
+@app.delete("/api/edit/history")
+async def clear_edit_history(request: Request):
+    """편집 히스토리 삭제"""
+    session = await get_session_from_request(request)
+    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    edit_history_mgr.clear()
+    return {"success": True}
+
+
+@app.delete("/api/edit/history/{history_id}")
+async def delete_edit_history_entry(history_id: str, request: Request):
+    """편집 히스토리 항목 삭제"""
+    session = await get_session_from_request(request)
+    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    success = edit_history_mgr.delete(history_id)
+    return {"success": success}
 
 
 # ============= 메인 =============

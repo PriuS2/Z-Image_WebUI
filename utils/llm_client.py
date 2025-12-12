@@ -15,22 +15,49 @@ class LLMClient:
         self._current_config: Dict[str, Any] = {}
     
     def _get_config(self) -> Dict[str, Any]:
-        """현재 설정에서 LLM 구성 가져오기 (환경변수 우선)"""
-        # 환경변수 우선, 없으면 settings.yaml 사용
-        provider_id = LLM_PROVIDER or settings.get("llm_provider", "openai")
+        """현재 설정에서 LLM 구성 가져오기"""
+        # settings.yaml에서 provider 가져오기
+        provider_id = settings.get("llm_provider", "env")
+        
+        # "env" provider: 환경변수(.env) 설정 사용
+        if provider_id == "env":
+            # 환경변수에서 실제 provider 결정
+            actual_provider = LLM_PROVIDER or "openai"
+            provider_info = LLM_PROVIDERS.get(actual_provider, LLM_PROVIDERS["openai"])
+            
+            api_key = LLM_API_KEY
+            
+            if actual_provider == "custom":
+                base_url = LLM_BASE_URL
+            else:
+                base_url = LLM_BASE_URL or provider_info["base_url"]
+            
+            model = LLM_MODEL or provider_info["default_model"]
+            
+            return {
+                "provider": "env",
+                "actual_provider": actual_provider,
+                "api_key": api_key,
+                "base_url": base_url,
+                "model": model,
+            }
+        
+        # 다른 provider: 웹 UI 설정 사용
         provider_info = LLM_PROVIDERS.get(provider_id, LLM_PROVIDERS["openai"])
         
-        # API 키: 환경변수 우선, 그 다음 settings
-        api_key = LLM_API_KEY or settings.get("llm_api_key") or settings.get("openai_api_key", "")
+        # API 키: settings에서 가져오기
+        api_key = settings.get("llm_api_key") or settings.get("openai_api_key", "")
         
         # Base URL: 커스텀이면 설정값, 아니면 provider 기본값
         if provider_id == "custom":
-            base_url = LLM_BASE_URL or settings.get("llm_base_url", "")
+            base_url = settings.get("llm_base_url", "")
+        elif provider_id in ["ollama", "lmstudio"]:
+            base_url = settings.get("llm_base_url", "") or provider_info["base_url"]
         else:
             base_url = provider_info["base_url"]
         
-        # 모델: 환경변수 우선, 그 다음 settings, 최후에 provider 기본값
-        model = LLM_MODEL or settings.get("llm_model") or provider_info["default_model"]
+        # 모델: settings 우선, 없으면 provider 기본값
+        model = settings.get("llm_model") or provider_info["default_model"]
         
         return {
             "provider": provider_id,

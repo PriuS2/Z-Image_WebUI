@@ -1,0 +1,3 @@
+[submodule "LongCat-Image"]
+	path = LongCat-Image
+	url = https://github.com/meituan-longcat/LongCat-Image

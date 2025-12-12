@@ -20,6 +20,11 @@ RELOAD=false
 DEFAULT_MODEL=Tongyi-MAI/Z-Image-Turbo
 GGUF_MODEL_REPO=jayn7/Z-Image-Turbo-GGUF
 
+# ===== LongCat-Image-Edit Model Settings =====
+LONGCAT_EDIT_MODEL=meituan-longcat/LongCat-Image-Edit
+LONGCAT_EDIT_GGUF_REPO=stduhpf/LongCat-Image-Edit-gguf
+LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT=10
+
 # ===== LLM Settings =====
 # Provider: openai, groq, openrouter, together, ollama, lmstudio, custom
 LLM_PROVIDER=openai
@@ -70,6 +75,11 @@ MODELS_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 # ===== 모델 설정 =====
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "Tongyi-MAI/Z-Image-Turbo")
 GGUF_MODEL_REPO = os.getenv("GGUF_MODEL_REPO", "jayn7/Z-Image-Turbo-GGUF")
+
+# ===== LongCat-Image-Edit 모델 설정 =====
+LONGCAT_EDIT_MODEL = os.getenv("LONGCAT_EDIT_MODEL", "meituan-longcat/LongCat-Image-Edit")
+LONGCAT_EDIT_GGUF_REPO = os.getenv("LONGCAT_EDIT_GGUF_REPO", "stduhpf/LongCat-Image-Edit-gguf")
+LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT = int(os.getenv("LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT", "10"))
 
 # ===== LLM 설정 (환경변수 우선) =====
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")  # 빈 문자열이면 settings.yaml 사용
@@ -142,6 +152,61 @@ DEFAULT_GENERATION_SETTINGS = {
     "height": 512,
     "num_inference_steps": 9,
     "guidance_scale": 0.0,
+    "num_images": 1,
+    "seed": -1,  # -1 = 랜덤
+}
+
+# LongCat-Image-Edit 양자화 옵션
+EDIT_QUANTIZATION_OPTIONS = {
+    # 기본 BF16 (양자화 없음, 최고 품질)
+    "BF16 (기본, 최고품질)": {
+        "type": "bf16",
+        "repo": LONGCAT_EDIT_MODEL,
+        "is_gguf": False,
+    },
+    # GGUF 양자화 옵션 (VRAM 절약)
+    "GGUF Q8_0 (고품질)": {
+        "type": "Q8_0",
+        "repo": LONGCAT_EDIT_GGUF_REPO,
+        "filename": "LongCat-Image-Edit-Q8_0.gguf",
+        "is_gguf": True,
+    },
+    "GGUF Q6_K (고품질)": {
+        "type": "Q6_K",
+        "repo": LONGCAT_EDIT_GGUF_REPO,
+        "filename": "LongCat-Image-Edit-Q6_K.gguf",
+        "is_gguf": True,
+    },
+    "GGUF Q5_K_M (균형)": {
+        "type": "Q5_K_M",
+        "repo": LONGCAT_EDIT_GGUF_REPO,
+        "filename": "LongCat-Image-Edit-Q5_K_M.gguf",
+        "is_gguf": True,
+    },
+    "GGUF Q4_K_M (추천)": {
+        "type": "Q4_K_M",
+        "repo": LONGCAT_EDIT_GGUF_REPO,
+        "filename": "LongCat-Image-Edit-Q4_K_M.gguf",
+        "is_gguf": True,
+    },
+    "GGUF Q4_K_S (경량)": {
+        "type": "Q4_K_S",
+        "repo": LONGCAT_EDIT_GGUF_REPO,
+        "filename": "LongCat-Image-Edit-Q4_K_S.gguf",
+        "is_gguf": True,
+    },
+    "GGUF Q3_K_M (저사양)": {
+        "type": "Q3_K_M",
+        "repo": LONGCAT_EDIT_GGUF_REPO,
+        "filename": "LongCat-Image-Edit-Q3_K_M.gguf",
+        "is_gguf": True,
+    },
+}
+
+# 이미지 편집 기본값
+DEFAULT_EDIT_SETTINGS = {
+    "num_inference_steps": 50,
+    "guidance_scale": 4.5,
     "num_images": 1,
     "seed": -1,  # -1 = 랜덤
 }
