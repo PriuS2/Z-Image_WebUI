@@ -157,6 +157,7 @@ DEFAULT_GENERATION_SETTINGS = {
 }
 
 # LongCat-Image-Edit 양자화 옵션
+# 참고: stduhpf/LongCat-Image-Edit-gguf 레포에는 Q4_K_M, Q8_0만 존재
 EDIT_QUANTIZATION_OPTIONS = {
     # 기본 BF16 (양자화 없음, 최고 품질)
     "BF16 (기본, 최고품질)": {
@@ -168,37 +169,13 @@ EDIT_QUANTIZATION_OPTIONS = {
     "GGUF Q8_0 (고품질)": {
         "type": "Q8_0",
         "repo": LONGCAT_EDIT_GGUF_REPO,
-        "filename": "LongCat-Image-Edit-Q8_0.gguf",
-        "is_gguf": True,
-    },
-    "GGUF Q6_K (고품질)": {
-        "type": "Q6_K",
-        "repo": LONGCAT_EDIT_GGUF_REPO,
-        "filename": "LongCat-Image-Edit-Q6_K.gguf",
-        "is_gguf": True,
-    },
-    "GGUF Q5_K_M (균형)": {
-        "type": "Q5_K_M",
-        "repo": LONGCAT_EDIT_GGUF_REPO,
-        "filename": "LongCat-Image-Edit-Q5_K_M.gguf",
+        "filename": "longcat_edit_bfl_format-Q8_0.gguf",
         "is_gguf": True,
     },
     "GGUF Q4_K_M (추천)": {
         "type": "Q4_K_M",
         "repo": LONGCAT_EDIT_GGUF_REPO,
-        "filename": "LongCat-Image-Edit-Q4_K_M.gguf",
-        "is_gguf": True,
-    },
-    "GGUF Q4_K_S (경량)": {
-        "type": "Q4_K_S",
-        "repo": LONGCAT_EDIT_GGUF_REPO,
-        "filename": "LongCat-Image-Edit-Q4_K_S.gguf",
-        "is_gguf": True,
-    },
-    "GGUF Q3_K_M (저사양)": {
-        "type": "Q3_K_M",
-        "repo": LONGCAT_EDIT_GGUF_REPO,
-        "filename": "LongCat-Image-Edit-Q3_K_M.gguf",
+        "filename": "longcat_edit_bfl_format-Q4_K_M.gguf",
         "is_gguf": True,
     },
 }
