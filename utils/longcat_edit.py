@@ -12,6 +12,36 @@ from config.defaults import (
     EDIT_QUANTIZATION_OPTIONS,
     DEFAULT_EDIT_SETTINGS,
 )
+from utils.llm_client import llm_client
+
+
+# 참조 이미지 분석용 시스템 프롬프트
+REFERENCE_IMAGE_ANALYSIS_PROMPT = """You are an expert at analyzing images for AI image editing tasks.
+
+Analyze the provided reference image and describe it in detail for use in image editing.
+
+Focus on these aspects:
+
+**Style & Atmosphere:**
+- Art style, color palette, brush strokes, texture
+- Lighting, ambiance, emotional tone
+- Contrast, saturation, color grading
+
+**Objects & Elements (for object composition):**
+- Main objects: shape, color, texture, material, size
+- Object details: patterns, decorations, unique features
+- Spatial relationships: position, orientation, how objects are arranged
+
+**For object transfer/composition:**
+If there's a prominent object (plant, furniture, accessory, etc.), describe it in detail so it can be transferred to another image:
+- Exact appearance (e.g., "terracotta pot with green succulent")
+- Physical properties (glossy, matte, rough, smooth)
+- Any distinctive features that should be preserved
+
+Output ONLY a concise description (max 150 words) that can be used as a reference for image editing.
+Use descriptive phrases that work well with image generation AI.
+Do NOT include any explanation or preamble - just the description.
+Output in English."""
 
 
 class LongCatEditManager:
@@ -219,6 +249,51 @@ class LongCatEditManager:
         if self.pipe and original_progress_bar:
             self.pipe.progress_bar = types.MethodType(original_progress_bar, self.pipe)
     
+    async def analyze_reference_image(
+        self,
+        reference_image: Image.Image,
+        original_prompt: str
+    ) -> Tuple[str, bool]:
+        """
+        참조 이미지를 Vision LLM으로 분석하여 프롬프트에 통합
+        
+        Args:
+            reference_image: 참조 이미지
+            original_prompt: 원본 프롬프트
+        
+        Returns:
+            (결합된 프롬프트, 성공 여부)
+        """
+        if not llm_client.is_available:
+            print("LLM 클라이언트를 사용할 수 없습니다. 원본 프롬프트 사용.")
+            return original_prompt, False
+        
+        try:
+            # 참조 이미지 분석
+            analysis = await asyncio.to_thread(
+                llm_client.analyze_image,
+                reference_image,
+                REFERENCE_IMAGE_ANALYSIS_PROMPT,
+                temperature=0.5,
+                max_tokens=200
+            )
+            
+            if not analysis:
+                print("참조 이미지 분석 실패. 원본 프롬프트 사용.")
+                return original_prompt, False
+            
+            # 프롬프트 결합 (참조 스타일 + 원본 지시)
+            combined_prompt = f"Apply this style: {analysis}. Edit instruction: {original_prompt}"
+            
+            print(f"[참조 이미지 분석 결과]\n{analysis}")
+            print(f"[결합된 프롬프트]\n{combined_prompt}")
+            
+            return combined_prompt, True
+            
+        except Exception as e:
+            print(f"참조 이미지 분석 오류: {e}")
+            return original_prompt, False
+    
     async def edit_image(
         self,
         image: Image.Image,
@@ -229,7 +304,8 @@ class LongCatEditManager:
         seed: int = -1,
         num_images: int = 1,
         reference_image: Optional[Image.Image] = None,
-        progress_callback: Optional[Callable[[int, int, int, int], Any]] = None
+        progress_callback: Optional[Callable[[int, int, int, int], Any]] = None,
+        status_callback: Optional[Callable[[str], Any]] = None
     ) -> Tuple[bool, list, str]:
         """
         이미지 편집 실행
@@ -242,8 +318,9 @@ class LongCatEditManager:
             guidance_scale: 가이던스 스케일
             seed: 시드 (-1이면 랜덤)
             num_images: 생성할 이미지 수
-            reference_image: 참조 이미지 (스타일 참조용)
+            reference_image: 참조 이미지 (스타일 참조용, Vision LLM으로 분석)
             progress_callback: 진행상황 콜백 (current_image, total_images, current_step, total_steps)
+            status_callback: 상태 메시지 콜백 (message)
         
         Returns:
             (success, images, message)
@@ -257,6 +334,24 @@ class LongCatEditManager:
             # RGB로 변환
             if image.mode != "RGB":
                 image = image.convert("RGB")
+            
+            # 참조 이미지 분석 및 프롬프트 결합
+            final_prompt = prompt
+            if reference_image is not None:
+                if status_callback:
+                    await status_callback("🔍 참조 이미지 분석 중...")
+                
+                combined_prompt, success = await self.analyze_reference_image(
+                    reference_image, prompt
+                )
+                
+                if success:
+                    final_prompt = combined_prompt
+                    if status_callback:
+                        await status_callback("✅ 참조 이미지 스타일 적용됨")
+                else:
+                    if status_callback:
+                        await status_callback("⚠️ 참조 이미지 분석 실패, 원본 프롬프트 사용")
             
             # 시드 설정
             if seed == -1:
@@ -294,11 +389,11 @@ class LongCatEditManager:
                 original_progress_bar = self._hook_progress_bar(step_cb)
                 
                 try:
-                    # 편집 실행
+                    # 편집 실행 (final_prompt 사용 - 참조 이미지 분석 결과 포함)
                     def run_edit():
                         return self.pipe(
                             image,
-                            prompt,
+                            final_prompt,
                             negative_prompt=negative_prompt,
                             guidance_scale=guidance_scale,
                             num_inference_steps=num_inference_steps,

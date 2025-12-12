@@ -153,6 +153,11 @@ function handleWebSocketMessage(data) {
             handleEditProgress(data);
             break;
         
+        case 'edit_system':
+            // 편집 탭 시스템 메시지
+            addEditMessage('system', data.content);
+            break;
+        
         case 'edit_result':
             // 편집 결과
             handleEditResult(data);

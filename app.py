@@ -1495,7 +1495,7 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                     "current_model": longcat_edit_manager.current_model
                 })
                 await ws_manager.broadcast({
-                    "type": "complete",
+                    "type": "edit_system",
                     "content": f"✅ 편집 모델 로드 완료!"
                 })
                 return {"success": True, "message": message}
@@ -1511,7 +1511,7 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 
         except Exception as e:
             await ws_manager.broadcast({
-                "type": "error",
+                "type": "edit_system",
                 "content": f"❌ 편집 모델 로드 실패: {str(e)}"
             })
             raise HTTPException(500, str(e))
@@ -1602,19 +1602,19 @@ async def edit_image(
         final_prompt = prompt
         if auto_translate_bool and edit_translator.is_korean(prompt):
             await ws_manager.send_to_session(session.session_id, {
-                "type": "system",
+                "type": "edit_system",
                 "content": "🌐 편집 지시어 번역 중..."
             })
             final_prompt, success = edit_translator.translate(prompt)
             if not success:
                 await ws_manager.send_to_session(session.session_id, {
-                    "type": "warning",
+                    "type": "edit_system",
                     "content": "⚠️ 번역 실패, 원문 사용"
                 })
         
         # 편집 시작 메시지
         await ws_manager.send_to_session(session.session_id, {
-            "type": "system",
+            "type": "edit_system",
             "content": "🎨 이미지 편집 중..."
         })
         
@@ -1634,6 +1634,13 @@ async def edit_image(
                 "progress": overall_progress
             })
         
+        # 상태 메시지 콜백 정의 (참조 이미지 분석 등)
+        async def edit_status_callback(message: str):
+            await ws_manager.send_to_session(session.session_id, {
+                "type": "edit_system",
+                "content": message
+            })
+        
         # 편집 실행
         success, results, message = await longcat_edit_manager.edit_image(
             image=pil_image,
@@ -1643,7 +1650,8 @@ async def edit_image(
             seed=seed,
             num_images=num_images,
             reference_image=ref_image,
-            progress_callback=edit_progress_callback
+            progress_callback=edit_progress_callback,
+            status_callback=edit_status_callback
         )
         
         if not success:
@@ -1705,7 +1713,7 @@ async def edit_image(
         
         # 완료 메시지
         await ws_manager.send_to_session(session.session_id, {
-            "type": "complete",
+            "type": "edit_system",
             "content": f"✅ 편집 완료! (시드: {results[0]['seed'] if results else 'N/A'})"
         })
         

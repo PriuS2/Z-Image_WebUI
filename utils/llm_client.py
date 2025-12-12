@@ -1,7 +1,10 @@
 """OpenAI 호환 API 클라이언트 유틸리티"""
 
-from typing import Optional, Dict, Any, List
+import base64
+from io import BytesIO
+from typing import Optional, Dict, Any, List, Union
 from openai import OpenAI
+from PIL import Image
 
 from config.defaults import LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
 from utils.settings import settings, LLM_PROVIDERS
@@ -123,7 +126,7 @@ class LLMClient:
     
     def chat_completion(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         temperature: float = 0.7,
         max_tokens: int = 1000,
     ) -> Optional[str]:
@@ -151,6 +154,75 @@ class LLMClient:
             return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"LLM API 오류: {e}")
+            return None
+    
+    def _image_to_base64(self, image: Union[Image.Image, bytes]) -> str:
+        """이미지를 base64 문자열로 변환"""
+        if isinstance(image, Image.Image):
+            buffered = BytesIO()
+            # RGB로 변환 (RGBA인 경우)
+            if image.mode in ('RGBA', 'P'):
+                image = image.convert('RGB')
+            image.save(buffered, format="JPEG", quality=85)
+            img_bytes = buffered.getvalue()
+        else:
+            img_bytes = image
+        
+        return base64.b64encode(img_bytes).decode('utf-8')
+    
+    def analyze_image(
+        self,
+        image: Union[Image.Image, bytes],
+        instruction: str,
+        temperature: float = 0.7,
+        max_tokens: int = 500,
+    ) -> Optional[str]:
+        """
+        Vision LLM을 사용하여 이미지 분석
+        
+        Args:
+            image: PIL Image 또는 이미지 바이트
+            instruction: 분석 지시사항
+            temperature: 생성 온도
+            max_tokens: 최대 토큰 수
+        
+        Returns:
+            분석 결과 텍스트 또는 None (실패 시)
+        """
+        if not self.client:
+            return None
+        
+        try:
+            base64_image = self._image_to_base64(image)
+            
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": instruction
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ]
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Vision LLM API 오류: {e}")
             return None
     
     def invalidate(self) -> None:
