@@ -76,9 +76,13 @@ class LongCatEditManager:
                 # 진행 상황 콜백
                 def report_progress(percent: int, label: str, detail: str = ""):
                     if progress_callback:
-                        asyncio.create_task(
-                            asyncio.to_thread(progress_callback, percent, label, detail)
-                        )
+                        # async 함수와 sync 함수 모두 지원
+                        if asyncio.iscoroutinefunction(progress_callback):
+                            asyncio.create_task(progress_callback(percent, label, detail))
+                        else:
+                            asyncio.create_task(
+                                asyncio.to_thread(progress_callback, percent, label, detail)
+                            )
                 
                 report_progress(5, "🔧 LongCat-Image-Edit 모델 초기화 중...", f"디바이스: {self.device}")
                 
