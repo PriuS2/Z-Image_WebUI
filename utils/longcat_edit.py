@@ -15,32 +15,27 @@ from config.defaults import (
 from utils.llm_client import llm_client
 
 
-# 참조 이미지 분석용 시스템 프롬프트
-REFERENCE_IMAGE_ANALYSIS_PROMPT = """You are an expert at analyzing images for AI image editing tasks.
+# 참조 이미지 분석용 프롬프트 템플릿 (편집 프롬프트 기반으로 필요한 요소만 추출)
+REFERENCE_IMAGE_ANALYSIS_TEMPLATE = """You are an expert at analyzing images for AI image editing tasks.
 
-Analyze the provided reference image and describe it in detail for use in image editing.
+The user wants to edit an image with this instruction: "{edit_prompt}"
 
-Focus on these aspects:
+Your task: Look at the reference image and extract ONLY the specific elements mentioned or implied in the edit instruction.
 
-**Style & Atmosphere:**
-- Art style, color palette, brush strokes, texture
-- Lighting, ambiance, emotional tone
-- Contrast, saturation, color grading
+Rules:
+1. Focus ONLY on elements relevant to the edit instruction
+2. If the instruction mentions "flower pot" or "plant", describe ONLY the pot/plant from the reference image
+3. If the instruction mentions "style" or "atmosphere", describe ONLY the artistic style
+4. If the instruction mentions a specific object, describe ONLY that object
+5. Do NOT describe the entire image - be selective and focused
+6. Keep description brief (max 50 words) - just the essential visual details
 
-**Objects & Elements (for object composition):**
-- Main objects: shape, color, texture, material, size
-- Object details: patterns, decorations, unique features
-- Spatial relationships: position, orientation, how objects are arranged
+Examples:
+- Edit instruction: "Make them hold this flower pot" → Describe only the pot (color, material, plant type)
+- Edit instruction: "Apply this painting style" → Describe only the art style (brushwork, colors, technique)
+- Edit instruction: "Add this hat to the person" → Describe only the hat (shape, color, material)
 
-**For object transfer/composition:**
-If there's a prominent object (plant, furniture, accessory, etc.), describe it in detail so it can be transferred to another image:
-- Exact appearance (e.g., "terracotta pot with green succulent")
-- Physical properties (glossy, matte, rough, smooth)
-- Any distinctive features that should be preserved
-
-Output ONLY a concise description (max 150 words) that can be used as a reference for image editing.
-Use descriptive phrases that work well with image generation AI.
-Do NOT include any explanation or preamble - just the description.
+Output ONLY a brief, focused description of the relevant element(s). No explanation or preamble.
 Output in English."""
 
 
@@ -269,24 +264,31 @@ class LongCatEditManager:
             return original_prompt, False
         
         try:
-            # 참조 이미지 분석
+            # 편집 프롬프트 기반으로 필요한 요소만 추출하는 프롬프트 생성
+            analysis_prompt = REFERENCE_IMAGE_ANALYSIS_TEMPLATE.format(
+                edit_prompt=original_prompt
+            )
+            
+            # 참조 이미지 분석 (편집 프롬프트와 관련된 요소만)
             analysis = await asyncio.to_thread(
                 llm_client.analyze_image,
                 reference_image,
-                REFERENCE_IMAGE_ANALYSIS_PROMPT,
-                temperature=0.5,
-                max_tokens=200
+                analysis_prompt,
+                temperature=0.3,  # 더 일관된 결과를 위해 낮춤
+                max_tokens=100   # 간결한 설명만 필요
             )
             
             if not analysis:
                 print("참조 이미지 분석 실패. 원본 프롬프트 사용.")
                 return original_prompt, False
             
-            # 프롬프트 결합 (참조 스타일 + 원본 지시)
-            combined_prompt = f"Apply this style: {analysis}. Edit instruction: {original_prompt}"
+            # 프롬프트 결합 (원본 지시 + 참조 요소 설명)
+            # 원본 프롬프트를 먼저 두고, 참조 요소는 보조 정보로 추가
+            combined_prompt = f"{original_prompt}. Reference element: {analysis}"
             
-            print(f"[참조 이미지 분석 결과]\n{analysis}")
-            print(f"[결합된 프롬프트]\n{combined_prompt}")
+            print(f"[편집 프롬프트] {original_prompt}")
+            print(f"[추출된 참조 요소] {analysis}")
+            print(f"[최종 프롬프트] {combined_prompt}")
             
             return combined_prompt, True
             
