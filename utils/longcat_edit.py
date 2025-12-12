@@ -199,50 +199,42 @@ class LongCatEditManager:
                 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
                 
                 if self.distributed_mode and gpu_count > 1:
-                    # 분산 모드: 각 컴포넌트를 지정된 GPU로 이동 + accelerate hooks 사용
-                    report_progress(85, "🔀 컴포넌트별 GPU 분산 중...", "")
+                    # 분산 모드: 모든 컴포넌트를 동일한 GPU에 배치 (디바이스 불일치 방지)
+                    # 참고: 멀티 GPU 분산은 파이프라인 내부 텐서 이동 문제로 비활성화
+                    report_progress(85, "🔀 모델을 GPU로 이동 중...", "")
                     
-                    def distribute_components():
-                        from accelerate.hooks import add_hook_to_module, AlignDevicesHook
-                        
-                        default_device = torch.device(f"cuda:{self.gpu_index}")
-                        
-                        # Text Encoder 배치
-                        te_device = default_device
-                        if self.text_encoder_gpu >= 0 and self.text_encoder_gpu < gpu_count:
-                            te_device = torch.device(f"cuda:{self.text_encoder_gpu}")
+                    # 분산 모드여도 실제로는 단일 GPU에 모두 배치 (안정성 우선)
+                    # transformer_gpu가 설정되어 있으면 해당 GPU 사용, 아니면 기본 GPU
+                    target_gpu = self.transformer_gpu if self.transformer_gpu >= 0 else self.gpu_index
+                    target_device = torch.device(f"cuda:{target_gpu}")
+                    
+                    def move_to_single_gpu():
+                        # 모든 컴포넌트를 동일한 GPU에 배치
                         if hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
-                            self.pipe.text_encoder = self.pipe.text_encoder.to(te_device)
-                            # Hook 추가: forward 시 입력을 자동으로 해당 디바이스로 이동
-                            add_hook_to_module(self.pipe.text_encoder, AlignDevicesHook(execution_device=te_device))
-                            print(f"📍 Text Encoder → {te_device}")
-                        
-                        # Transformer + VAE 배치 (같은 GPU에 함께 배치)
-                        tf_vae_device = default_device
-                        if self.transformer_gpu >= 0 and self.transformer_gpu < gpu_count:
-                            tf_vae_device = torch.device(f"cuda:{self.transformer_gpu}")
+                            self.pipe.text_encoder = self.pipe.text_encoder.to(target_device)
+                            print(f"📍 Text Encoder → {target_device}")
                         
                         if hasattr(self.pipe, 'transformer') and self.pipe.transformer is not None:
-                            self.pipe.transformer = self.pipe.transformer.to(tf_vae_device)
-                            add_hook_to_module(self.pipe.transformer, AlignDevicesHook(execution_device=tf_vae_device))
-                            print(f"📍 Transformer → {tf_vae_device}")
+                            self.pipe.transformer = self.pipe.transformer.to(target_device)
+                            print(f"📍 Transformer → {target_device}")
                         
-                        # VAE는 Transformer와 같은 GPU에 배치
                         if hasattr(self.pipe, 'vae') and self.pipe.vae is not None:
-                            self.pipe.vae = self.pipe.vae.to(tf_vae_device)
-                            add_hook_to_module(self.pipe.vae, AlignDevicesHook(execution_device=tf_vae_device))
-                            print(f"📍 VAE → {tf_vae_device} (Transformer와 동일)")
+                            self.pipe.vae = self.pipe.vae.to(target_device)
+                            print(f"📍 VAE → {target_device}")
+                        
+                        # 파이프라인의 _execution_device 설정
+                        if hasattr(self.pipe, '_execution_device'):
+                            self.pipe._execution_device = target_device
                     
-                    await asyncio.to_thread(distribute_components)
+                    await asyncio.to_thread(move_to_single_gpu)
                     
-                    # 분산 배치 정보 생성
-                    dist_info = []
-                    if self.text_encoder_gpu >= 0:
-                        dist_info.append(f"TextEnc→GPU{self.text_encoder_gpu}")
-                    if self.transformer_gpu >= 0:
-                        dist_info.append(f"Trans+VAE→GPU{self.transformer_gpu}")
+                    # 실제 사용 디바이스 저장
+                    self.device = str(target_device)
+                    self.gpu_index = target_gpu
+                    # 분산 모드 비활성화 (단일 GPU 사용)
+                    self.distributed_mode = False
                     
-                    report_progress(95, "⚙️ 분산 배치 완료", ", ".join(dist_info) if dist_info else "기본 GPU 사용")
+                    report_progress(95, "⚙️ 모델 배치 완료", f"GPU{target_gpu} 사용")
                 
                 elif cpu_offload:
                     # CPU 오프로딩 모드
@@ -489,7 +481,21 @@ class LongCatEditManager:
             if seed == -1:
                 seed = random.randint(0, 2147483647)
             
-            generator = torch.Generator("cpu").manual_seed(seed)
+            # Generator는 파이프라인이 있는 디바이스에 생성
+            # 현재 파이프라인의 실행 디바이스 확인
+            if hasattr(self.pipe, '_execution_device') and self.pipe._execution_device is not None:
+                gen_device = self.pipe._execution_device
+            elif self.device and self.device.startswith("cuda"):
+                gen_device = self.device
+            else:
+                gen_device = "cpu"
+            
+            # CUDA 디바이스인 경우 generator도 해당 디바이스에 생성
+            try:
+                generator = torch.Generator(device=gen_device).manual_seed(seed)
+            except Exception:
+                # 실패 시 CPU로 폴백
+                generator = torch.Generator(device="cpu").manual_seed(seed)
             
             # 메인 이벤트 루프 캡처 (별도 스레드에서 사용하기 위해)
             main_loop = asyncio.get_running_loop()
@@ -498,7 +504,10 @@ class LongCatEditManager:
             for i in range(num_images):
                 current_seed = seed + i
                 if i > 0:
-                    generator = torch.Generator("cpu").manual_seed(current_seed)
+                    try:
+                        generator = torch.Generator(device=gen_device).manual_seed(current_seed)
+                    except Exception:
+                        generator = torch.Generator(device="cpu").manual_seed(current_seed)
                 
                 # 스텝 콜백을 위한 상태 저장 (클로저 문제 방지)
                 current_image_idx = i
