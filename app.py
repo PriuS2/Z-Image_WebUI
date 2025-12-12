@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Response, Cookie
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Response, Cookie
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -1196,6 +1196,7 @@ async def get_settings(request: Request):
     from utils.settings import LLM_PROVIDERS
     from utils.translator import Translator
     from utils.prompt_enhancer import PromptEnhancer
+    from utils.edit_llm import EditTranslator, EditEnhancer, EditSuggester
     
     session = await get_session_from_request(request)
     client_host = request.client.host if request.client else None
@@ -1208,6 +1209,15 @@ async def get_settings(request: Request):
     # 세션에 설정이 없으면 전역 설정 사용, 전역도 없으면 기본값
     translate_prompt = session_translate_prompt or settings.get("translate_system_prompt") or Translator.DEFAULT_SYSTEM_PROMPT
     enhance_prompt = session_enhance_prompt or settings.get("enhance_system_prompt") or PromptEnhancer.DEFAULT_SYSTEM_PROMPT
+    
+    # 편집 시스템 프롬프트 (세션별 개인화)
+    session_edit_translate = session.get_setting("edit_translate_system_prompt")
+    session_edit_enhance = session.get_setting("edit_enhance_system_prompt")
+    session_edit_suggest = session.get_setting("edit_suggest_system_prompt")
+    
+    edit_translate_prompt = session_edit_translate or settings.get("edit_translate_system_prompt") or EditTranslator.DEFAULT_SYSTEM_PROMPT
+    edit_enhance_prompt = session_edit_enhance or settings.get("edit_enhance_system_prompt") or EditEnhancer.DEFAULT_SYSTEM_PROMPT
+    edit_suggest_prompt = session_edit_suggest or settings.get("edit_suggest_system_prompt") or EditSuggester.DEFAULT_SYSTEM_PROMPT
     
     return {
         # 관리자 여부
@@ -1233,6 +1243,13 @@ async def get_settings(request: Request):
         "enhance_system_prompt": enhance_prompt,
         "default_translate_system_prompt": Translator.DEFAULT_SYSTEM_PROMPT,
         "default_enhance_system_prompt": PromptEnhancer.DEFAULT_SYSTEM_PROMPT,
+        # 편집 시스템 프롬프트 (세션별 개인화)
+        "edit_translate_system_prompt": edit_translate_prompt,
+        "edit_enhance_system_prompt": edit_enhance_prompt,
+        "edit_suggest_system_prompt": edit_suggest_prompt,
+        "default_edit_translate_system_prompt": EditTranslator.DEFAULT_SYSTEM_PROMPT,
+        "default_edit_enhance_system_prompt": EditEnhancer.DEFAULT_SYSTEM_PROMPT,
+        "default_edit_suggest_system_prompt": EditSuggester.DEFAULT_SYSTEM_PROMPT,
         # 기타 설정
         "output_path": str(settings.get("output_path", OUTPUTS_DIR)),
         "filename_pattern": settings.get("filename_pattern", "{date}_{time}_{seed}"),
@@ -1248,6 +1265,10 @@ async def get_settings(request: Request):
 class SystemPromptsRequest(BaseModel):
     translate_system_prompt: Optional[str] = None
     enhance_system_prompt: Optional[str] = None
+    # 편집 시스템 프롬프트 (개인화)
+    edit_translate_system_prompt: Optional[str] = None
+    edit_enhance_system_prompt: Optional[str] = None
+    edit_suggest_system_prompt: Optional[str] = None
 
 
 @app.post("/api/settings/prompts")
@@ -1256,6 +1277,7 @@ async def save_session_prompts(request: Request, prompts_request: SystemPromptsR
     session = await get_session_from_request(request)
     session_settings = session.get_settings()
     
+    # 생성 시스템 프롬프트
     if prompts_request.translate_system_prompt is not None:
         if prompts_request.translate_system_prompt == '':
             # 빈 문자열이면 설정 삭제 (기본값 사용)
@@ -1270,6 +1292,25 @@ async def save_session_prompts(request: Request, prompts_request: SystemPromptsR
         else:
             session_settings["enhance_system_prompt"] = prompts_request.enhance_system_prompt
     
+    # 편집 시스템 프롬프트
+    if prompts_request.edit_translate_system_prompt is not None:
+        if prompts_request.edit_translate_system_prompt == '':
+            session_settings.pop("edit_translate_system_prompt", None)
+        else:
+            session_settings["edit_translate_system_prompt"] = prompts_request.edit_translate_system_prompt
+    
+    if prompts_request.edit_enhance_system_prompt is not None:
+        if prompts_request.edit_enhance_system_prompt == '':
+            session_settings.pop("edit_enhance_system_prompt", None)
+        else:
+            session_settings["edit_enhance_system_prompt"] = prompts_request.edit_enhance_system_prompt
+    
+    if prompts_request.edit_suggest_system_prompt is not None:
+        if prompts_request.edit_suggest_system_prompt == '':
+            session_settings.pop("edit_suggest_system_prompt", None)
+        else:
+            session_settings["edit_suggest_system_prompt"] = prompts_request.edit_suggest_system_prompt
+    
     session.save_settings(session_settings)
     
     response = JSONResponse(content={"success": True})
@@ -1283,10 +1324,18 @@ async def reset_session_prompts(request: Request):
     session = await get_session_from_request(request)
     
     session_settings = session.get_settings()
+    # 생성 시스템 프롬프트
     if "translate_system_prompt" in session_settings:
         del session_settings["translate_system_prompt"]
     if "enhance_system_prompt" in session_settings:
         del session_settings["enhance_system_prompt"]
+    # 편집 시스템 프롬프트
+    if "edit_translate_system_prompt" in session_settings:
+        del session_settings["edit_translate_system_prompt"]
+    if "edit_enhance_system_prompt" in session_settings:
+        del session_settings["edit_enhance_system_prompt"]
+    if "edit_suggest_system_prompt" in session_settings:
+        del session_settings["edit_suggest_system_prompt"]
     session.save_settings(session_settings)
     
     response = JSONResponse(content={"success": True})
@@ -1512,7 +1561,18 @@ async def unload_edit_model(request: Request):
 
 
 @app.post("/api/edit/generate")
-async def edit_image(request: Request, edit_request: EditGenerateRequest, image: UploadFile = File(...), reference_image: Optional[UploadFile] = File(None)):
+async def edit_image(
+    request: Request,
+    image: UploadFile = File(...),
+    prompt: str = Form(...),
+    korean_prompt: str = Form(""),
+    steps: int = Form(50),
+    guidance_scale: float = Form(4.5),
+    seed: int = Form(-1),
+    num_images: int = Form(1),
+    auto_translate: str = Form("true"),
+    reference_image: Optional[UploadFile] = File(None)
+):
     """이미지 편집 실행"""
     update_edit_activity()
     
@@ -1521,8 +1581,11 @@ async def edit_image(request: Request, edit_request: EditGenerateRequest, image:
     if not longcat_edit_manager.is_loaded:
         raise HTTPException(400, "편집 모델이 로드되지 않았습니다.")
     
-    if not edit_request.prompt.strip():
+    if not prompt.strip():
         raise HTTPException(400, "편집 프롬프트를 입력해주세요.")
+    
+    # Form에서 받은 auto_translate 문자열을 bool로 변환
+    auto_translate_bool = auto_translate.lower() in ("true", "1", "yes")
     
     try:
         # 이미지 로드
@@ -1536,13 +1599,13 @@ async def edit_image(request: Request, edit_request: EditGenerateRequest, image:
             ref_image = Image.open(BytesIO(ref_data)).convert("RGB")
         
         # 프롬프트 번역
-        final_prompt = edit_request.prompt
-        if edit_request.auto_translate and edit_translator.is_korean(edit_request.prompt):
+        final_prompt = prompt
+        if auto_translate_bool and edit_translator.is_korean(prompt):
             await ws_manager.send_to_session(session.session_id, {
                 "type": "system",
                 "content": "🌐 편집 지시어 번역 중..."
             })
-            final_prompt, success = edit_translator.translate(edit_request.prompt)
+            final_prompt, success = edit_translator.translate(prompt)
             if not success:
                 await ws_manager.send_to_session(session.session_id, {
                     "type": "warning",
@@ -1559,10 +1622,10 @@ async def edit_image(request: Request, edit_request: EditGenerateRequest, image:
         success, results, message = await longcat_edit_manager.edit_image(
             image=pil_image,
             prompt=final_prompt,
-            num_inference_steps=edit_request.steps,
-            guidance_scale=edit_request.guidance_scale,
-            seed=edit_request.seed,
-            num_images=edit_request.num_images,
+            num_inference_steps=steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            num_images=num_images,
             reference_image=ref_image
         )
         
@@ -1614,10 +1677,10 @@ async def edit_image(request: Request, edit_request: EditGenerateRequest, image:
         edit_history_mgr = get_edit_history_manager_sync(session.session_id)
         history_entry = edit_history_mgr.add(
             prompt=final_prompt,
-            korean_prompt=edit_request.korean_prompt,
+            korean_prompt=korean_prompt,
             settings={
-                "steps": edit_request.steps,
-                "guidance_scale": edit_request.guidance_scale,
+                "steps": steps,
+                "guidance_scale": guidance_scale,
                 "seed": results[0]["seed"] if results else -1,
             },
             result_image_paths=[img["path"] for img in images_response]

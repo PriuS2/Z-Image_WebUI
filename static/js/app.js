@@ -1401,6 +1401,10 @@ async function deleteFavorite(id) {
 let llmProviders = {};
 let defaultTranslatePrompt = '';
 let defaultEnhancePrompt = '';
+// 편집 시스템 프롬프트 기본값
+let defaultEditTranslatePrompt = '';
+let defaultEditEnhancePrompt = '';
+let defaultEditSuggestPrompt = '';
 
 async function loadLlmProviders() {
     try {
@@ -1446,6 +1450,25 @@ async function loadLlmProviders() {
         }
         if (enhancePromptInput) {
             enhancePromptInput.value = result.enhance_system_prompt || defaultEnhancePrompt;
+        }
+        
+        // 편집 시스템 프롬프트 기본값 및 현재값 로드
+        defaultEditTranslatePrompt = result.default_edit_translate_system_prompt || '';
+        defaultEditEnhancePrompt = result.default_edit_enhance_system_prompt || '';
+        defaultEditSuggestPrompt = result.default_edit_suggest_system_prompt || '';
+        
+        const editTranslatePromptInput = document.getElementById('editTranslateSystemPrompt');
+        const editEnhancePromptInput = document.getElementById('editEnhanceSystemPrompt');
+        const editSuggestPromptInput = document.getElementById('editSuggestSystemPrompt');
+        
+        if (editTranslatePromptInput) {
+            editTranslatePromptInput.value = result.edit_translate_system_prompt || defaultEditTranslatePrompt;
+        }
+        if (editEnhancePromptInput) {
+            editEnhancePromptInput.value = result.edit_enhance_system_prompt || defaultEditEnhancePrompt;
+        }
+        if (editSuggestPromptInput) {
+            editSuggestPromptInput.value = result.edit_suggest_system_prompt || defaultEditSuggestPrompt;
         }
         
         // 관리자 상태 업데이트
@@ -1736,6 +1759,79 @@ async function resetEnhancePrompt() {
     }
 }
 
+// ============= 편집 시스템 프롬프트 설정 (개인화) =============
+async function saveEditSystemPrompts() {
+    // 편집 시스템 프롬프트는 세션별 개인화 - 모든 사용자 저장 가능
+    const editTranslatePrompt = document.getElementById('editTranslateSystemPrompt')?.value || '';
+    const editEnhancePrompt = document.getElementById('editEnhanceSystemPrompt')?.value || '';
+    const editSuggestPrompt = document.getElementById('editSuggestSystemPrompt')?.value || '';
+    
+    try {
+        await apiCall('/settings/prompts', 'POST', {
+            edit_translate_system_prompt: editTranslatePrompt,
+            edit_enhance_system_prompt: editEnhancePrompt,
+            edit_suggest_system_prompt: editSuggestPrompt
+        });
+        addMessage('system', '✅ 편집 시스템 프롬프트 저장됨 (내 설정)');
+    } catch (error) {
+        addMessage('system', `❌ 저장 실패: ${error.message}`, 'error');
+    }
+}
+
+async function resetEditTranslatePrompt() {
+    const editTranslatePromptInput = document.getElementById('editTranslateSystemPrompt');
+    if (editTranslatePromptInput && defaultEditTranslatePrompt) {
+        editTranslatePromptInput.value = defaultEditTranslatePrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                edit_translate_system_prompt: ''
+            });
+        } catch (error) {
+            console.error('편집 번역 프롬프트 초기화 실패:', error);
+        }
+        
+        addMessage('system', '✅ 편집 지시어 번역 프롬프트가 기본값으로 초기화되었습니다.');
+    }
+}
+
+async function resetEditEnhancePrompt() {
+    const editEnhancePromptInput = document.getElementById('editEnhanceSystemPrompt');
+    if (editEnhancePromptInput && defaultEditEnhancePrompt) {
+        editEnhancePromptInput.value = defaultEditEnhancePrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                edit_enhance_system_prompt: ''
+            });
+        } catch (error) {
+            console.error('편집 향상 프롬프트 초기화 실패:', error);
+        }
+        
+        addMessage('system', '✅ 편집 지시어 향상 프롬프트가 기본값으로 초기화되었습니다.');
+    }
+}
+
+async function resetEditSuggestPrompt() {
+    const editSuggestPromptInput = document.getElementById('editSuggestSystemPrompt');
+    if (editSuggestPromptInput && defaultEditSuggestPrompt) {
+        editSuggestPromptInput.value = defaultEditSuggestPrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                edit_suggest_system_prompt: ''
+            });
+        } catch (error) {
+            console.error('편집 제안 프롬프트 초기화 실패:', error);
+        }
+        
+        addMessage('system', '✅ 편집 제안 프롬프트가 기본값으로 초기화되었습니다.');
+    }
+}
+
 // ============= UI 헬퍼 =============
 function switchTab(tabId) {
     document.querySelectorAll('.nav-item').forEach(btn => {
@@ -1937,6 +2033,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnResetEnhancePrompt = document.getElementById('btnResetEnhancePrompt');
     if (btnResetEnhancePrompt) {
         btnResetEnhancePrompt.addEventListener('click', resetEnhancePrompt);
+    }
+    
+    // 편집 시스템 프롬프트 설정 (개인화)
+    const btnSaveEditSystemPrompts = document.getElementById('btnSaveEditSystemPrompts');
+    if (btnSaveEditSystemPrompts) {
+        btnSaveEditSystemPrompts.addEventListener('click', saveEditSystemPrompts);
+    }
+    
+    const btnResetEditTranslatePrompt = document.getElementById('btnResetEditTranslatePrompt');
+    if (btnResetEditTranslatePrompt) {
+        btnResetEditTranslatePrompt.addEventListener('click', resetEditTranslatePrompt);
+    }
+    
+    const btnResetEditEnhancePrompt = document.getElementById('btnResetEditEnhancePrompt');
+    if (btnResetEditEnhancePrompt) {
+        btnResetEditEnhancePrompt.addEventListener('click', resetEditEnhancePrompt);
+    }
+    
+    const btnResetEditSuggestPrompt = document.getElementById('btnResetEditSuggestPrompt');
+    if (btnResetEditSuggestPrompt) {
+        btnResetEditSuggestPrompt.addEventListener('click', resetEditSuggestPrompt);
     }
     
     // 자동 언로드 설정
@@ -2433,7 +2550,19 @@ async function executeEdit() {
         
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || '편집 실패');
+            // detail이 객체인 경우 (ValidationError 등) 처리
+            let errorMessage = '편집 실패';
+            if (error.detail) {
+                if (typeof error.detail === 'string') {
+                    errorMessage = error.detail;
+                } else if (Array.isArray(error.detail)) {
+                    // FastAPI ValidationError 형식
+                    errorMessage = error.detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
+                } else if (typeof error.detail === 'object') {
+                    errorMessage = JSON.stringify(error.detail);
+                }
+            }
+            throw new Error(errorMessage);
         }
         
         // 결과는 WebSocket으로 받음
@@ -2455,6 +2584,63 @@ function setEditButtonState(editing) {
 
 
 // ============= 편집 LLM 기능 =============
+let isEditLlmProcessing = false;  // 편집 탭 LLM 처리 중 여부
+const EDIT_LLM_TIMEOUT = 5000;    // 번역, 향상 타임아웃 (5초)
+const EDIT_SUGGEST_TIMEOUT = 10000;  // 편집제안 타임아웃 (10초)
+
+function setEditLlmButtonsDisabled(disabled) {
+    const buttons = [
+        document.getElementById('btnEditTranslate'),
+        document.getElementById('btnEditEnhance'),
+        document.getElementById('btnEditSuggest'),
+        document.getElementById('btnEditTranslateKorean')
+    ];
+    
+    buttons.forEach(btn => {
+        if (btn) {
+            btn.disabled = disabled;
+            btn.style.opacity = disabled ? '0.5' : '1';
+            btn.style.pointerEvents = disabled ? 'none' : 'auto';
+        }
+    });
+    
+    isEditLlmProcessing = disabled;
+}
+
+async function editApiCallWithTimeout(endpoint, method, body, timeout) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    const options = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        signal: controller.signal
+    };
+    
+    if (body) {
+        options.body = JSON.stringify(body);
+    }
+    
+    try {
+        const response = await fetch(`/api${endpoint}`, options);
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || '요청 실패');
+        }
+        
+        return response.json();
+    } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            throw new Error(`요청 시간 초과 (${timeout / 1000}초)`);
+        }
+        throw error;
+    }
+}
+
 async function translateEditKoreanInput() {
     const koreanInput = document.getElementById('editKoreanInput');
     const koreanText = koreanInput?.value?.trim();
@@ -2465,13 +2651,18 @@ async function translateEditKoreanInput() {
         return false;
     }
     
+    if (isEditLlmProcessing) {
+        return false;
+    }
+    
     try {
+        setEditLlmButtonsDisabled(true);
         if (statusEl) {
             statusEl.textContent = '번역 중...';
             statusEl.className = 'translate-status translating';
         }
         
-        const result = await apiCall('/edit/translate', 'POST', { text: koreanText });
+        const result = await editApiCallWithTimeout('/edit/translate', 'POST', { text: koreanText }, EDIT_LLM_TIMEOUT);
         
         if (result.success) {
             document.getElementById('editPromptInput').value = result.translated;
@@ -2493,6 +2684,8 @@ async function translateEditKoreanInput() {
         }
         addEditMessage('system', `❌ 번역 실패: ${error.message}`, 'error');
         return false;
+    } finally {
+        setEditLlmButtonsDisabled(false);
     }
 }
 
@@ -2501,9 +2694,12 @@ async function translateEditPrompt() {
     const text = koreanInput?.value?.trim() || document.getElementById('editPromptInput')?.value?.trim();
     if (!text) return;
     
+    if (isEditLlmProcessing) return;
+    
     try {
+        setEditLlmButtonsDisabled(true);
         addEditMessage('system', '🌐 번역 중...');
-        const result = await apiCall('/edit/translate', 'POST', { text });
+        const result = await editApiCallWithTimeout('/edit/translate', 'POST', { text }, EDIT_LLM_TIMEOUT);
         
         if (result.success) {
             document.getElementById('editPromptInput').value = result.translated;
@@ -2511,6 +2707,8 @@ async function translateEditPrompt() {
         }
     } catch (error) {
         addEditMessage('system', `❌ 번역 실패: ${error.message}`, 'error');
+    } finally {
+        setEditLlmButtonsDisabled(false);
     }
 }
 
@@ -2521,9 +2719,12 @@ async function enhanceEditPrompt() {
         return;
     }
     
+    if (isEditLlmProcessing) return;
+    
     try {
+        setEditLlmButtonsDisabled(true);
         addEditMessage('system', '✨ 편집 지시어 향상 중...');
-        const result = await apiCall('/edit/enhance', 'POST', { instruction: prompt });
+        const result = await editApiCallWithTimeout('/edit/enhance', 'POST', { instruction: prompt }, EDIT_LLM_TIMEOUT);
         
         if (result.success) {
             document.getElementById('editPromptInput').value = result.enhanced;
@@ -2531,13 +2732,18 @@ async function enhanceEditPrompt() {
         }
     } catch (error) {
         addEditMessage('system', `❌ 향상 실패: ${error.message}`, 'error');
+    } finally {
+        setEditLlmButtonsDisabled(false);
     }
 }
 
 async function suggestEdits() {
+    if (isEditLlmProcessing) return;
+    
     try {
+        setEditLlmButtonsDisabled(true);
         addEditMessage('system', '💡 편집 아이디어 생성 중...');
-        const result = await apiCall('/edit/suggest', 'POST', { context: '', image_description: '' });
+        const result = await editApiCallWithTimeout('/edit/suggest', 'POST', { context: '', image_description: '' }, EDIT_SUGGEST_TIMEOUT);
         
         if (result.success && result.suggestions_korean.length > 0) {
             let html = '<p>💡 <strong>편집 아이디어:</strong></p><ul>';
@@ -2549,6 +2755,8 @@ async function suggestEdits() {
         }
     } catch (error) {
         addEditMessage('system', `❌ 제안 생성 실패: ${error.message}`, 'error');
+    } finally {
+        setEditLlmButtonsDisabled(false);
     }
 }
 
