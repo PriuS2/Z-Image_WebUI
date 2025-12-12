@@ -194,7 +194,8 @@ class LongCatEditManager:
         guidance_scale: float = 4.5,
         seed: int = -1,
         num_images: int = 1,
-        reference_image: Optional[Image.Image] = None
+        reference_image: Optional[Image.Image] = None,
+        progress_callback: Optional[Callable[[int, int, int], Any]] = None
     ) -> Tuple[bool, list, str]:
         """
         이미지 편집 실행
@@ -208,6 +209,7 @@ class LongCatEditManager:
             seed: 시드 (-1이면 랜덤)
             num_images: 생성할 이미지 수
             reference_image: 참조 이미지 (스타일 참조용)
+            progress_callback: 진행상황 콜백 (current_image, total_images, steps)
         
         Returns:
             (success, images, message)
@@ -233,6 +235,13 @@ class LongCatEditManager:
                 current_seed = seed + i
                 if i > 0:
                     generator = torch.Generator("cpu").manual_seed(current_seed)
+                
+                # 이미지 시작 시 진행 상황 콜백
+                if progress_callback:
+                    if asyncio.iscoroutinefunction(progress_callback):
+                        await progress_callback(i + 1, num_images, num_inference_steps)
+                    else:
+                        progress_callback(i + 1, num_images, num_inference_steps)
                 
                 # 편집 실행
                 def run_edit():

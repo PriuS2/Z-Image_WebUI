@@ -1618,6 +1618,19 @@ async def edit_image(
             "content": "🎨 이미지 편집 중..."
         })
         
+        # 진행 상황 콜백 정의
+        async def edit_progress_callback(current_image: int, total_images: int, steps: int):
+            # 전체 진행률 계산 (이미지 기준)
+            overall_progress = int((current_image - 1) / total_images * 100)
+            
+            await ws_manager.send_to_session(session.session_id, {
+                "type": "edit_progress",
+                "current_image": current_image,
+                "total_images": total_images,
+                "steps": steps,
+                "progress": overall_progress
+            })
+        
         # 편집 실행
         success, results, message = await longcat_edit_manager.edit_image(
             image=pil_image,
@@ -1626,7 +1639,8 @@ async def edit_image(
             guidance_scale=guidance_scale,
             seed=seed,
             num_images=num_images,
-            reference_image=ref_image
+            reference_image=ref_image,
+            progress_callback=edit_progress_callback
         )
         
         if not success:
@@ -1659,8 +1673,8 @@ async def edit_image(
                 seed=seed,
                 width=result_image.width,
                 height=result_image.height,
-                steps=edit_request.steps,
-                guidance_scale=edit_request.guidance_scale,
+                steps=steps,
+                guidance_scale=guidance_scale,
                 model="LongCat-Image-Edit",
             )
             ImageMetadata.save_with_metadata(result_image, output_path, metadata)

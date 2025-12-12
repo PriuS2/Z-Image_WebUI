@@ -148,11 +148,31 @@ function handleWebSocketMessage(data) {
             updateEditModelStatusFromData(data);
             break;
         
+        case 'edit_progress':
+            // 편집 진행 상황
+            handleEditProgress(data);
+            break;
+        
         case 'edit_result':
             // 편집 결과
             handleEditResult(data);
             break;
     }
+}
+
+
+// ============= 편집 진행 상황 처리 =============
+function handleEditProgress(data) {
+    const { current_image, total_images, steps, progress } = data;
+    
+    let label;
+    if (total_images > 1) {
+        label = `이미지 ${current_image}/${total_images} 편집 중... (${steps} steps)`;
+    } else {
+        label = `편집 중... (${steps} steps)`;
+    }
+    
+    showEditProgress(label, progress);
 }
 
 
@@ -2527,6 +2547,9 @@ async function executeEdit() {
     const displayPrompt = koreanText ? `🇰🇷 ${koreanText}\n🇺🇸 ${prompt}` : prompt;
     addEditMessage('user', displayPrompt);
     
+    // 진행률 표시 시작
+    showEditProgress('편집 준비 중...', 0);
+    
     const formData = new FormData();
     formData.append('image', editImageFile);
     formData.append('prompt', prompt);
@@ -2569,6 +2592,7 @@ async function executeEdit() {
         
     } catch (error) {
         addEditMessage('system', `❌ 오류: ${error.message}`, 'error');
+        hideEditProgress();
         isEditing = false;
         setEditButtonState(false);
     }
