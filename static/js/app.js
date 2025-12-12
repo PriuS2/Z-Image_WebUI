@@ -1906,7 +1906,17 @@ function showImageModal(path, metadata) {
         lastTranslateX: 0,
         lastTranslateY: 0,
         currentPath: path,
-        fitMode: true
+        fitMode: true,
+        naturalWidth: 0,
+        naturalHeight: 0
+    };
+    
+    // 이미지 로드 후 원본 크기 저장
+    img.onload = () => {
+        imagePreviewState.naturalWidth = img.naturalWidth;
+        imagePreviewState.naturalHeight = img.naturalHeight;
+        updateImageTransform();
+        updateZoomLevel();
     };
     
     img.src = path;
@@ -1934,10 +1944,25 @@ function updateImageTransform() {
     const wrapper = document.getElementById('imagePreviewWrapper');
     
     if (imagePreviewState.fitMode) {
-        img.style.transform = '';
+        // 화면에 맞춤 모드: CSS로 크기 제한
         wrapper.classList.add('fit-mode');
+        img.style.transform = '';
+        img.style.maxWidth = '95vw';
+        img.style.maxHeight = 'calc(100vh - 160px)';
+        img.style.width = 'auto';
+        img.style.height = 'auto';
     } else {
+        // 자유 줌/이동 모드: 제한 해제하고 transform 적용
         wrapper.classList.remove('fit-mode');
+        img.style.maxWidth = 'none';
+        img.style.maxHeight = 'none';
+        
+        // 원본 크기 기준으로 표시
+        if (imagePreviewState.naturalWidth && imagePreviewState.naturalHeight) {
+            img.style.width = imagePreviewState.naturalWidth + 'px';
+            img.style.height = imagePreviewState.naturalHeight + 'px';
+        }
+        
         img.style.transform = `translate(${imagePreviewState.translateX}px, ${imagePreviewState.translateY}px) scale(${imagePreviewState.scale})`;
     }
 }
@@ -1968,20 +1993,36 @@ function zoomImage(delta) {
 }
 
 function zoomToFit() {
+    const img = document.getElementById('modalImage');
+    
     imagePreviewState.fitMode = true;
     imagePreviewState.scale = 1;
     imagePreviewState.translateX = 0;
     imagePreviewState.translateY = 0;
+    
+    // 인라인 스타일 초기화
+    img.style.width = 'auto';
+    img.style.height = 'auto';
+    
     updateImageTransform();
     updateZoomLevel();
 }
 
 function zoomToOriginal() {
     const img = document.getElementById('modalImage');
+    
+    // 원본 픽셀 크기로 표시 (1:1)
     imagePreviewState.fitMode = false;
     imagePreviewState.scale = 1;
     imagePreviewState.translateX = 0;
     imagePreviewState.translateY = 0;
+    
+    // 이미지 크기를 원본 픽셀 크기로 명시적 설정
+    if (imagePreviewState.naturalWidth && imagePreviewState.naturalHeight) {
+        img.style.width = imagePreviewState.naturalWidth + 'px';
+        img.style.height = imagePreviewState.naturalHeight + 'px';
+    }
+    
     updateImageTransform();
     updateZoomLevel();
 }
