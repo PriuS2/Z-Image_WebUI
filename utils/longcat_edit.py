@@ -351,6 +351,7 @@ class LongCatEditManager:
                     final_prompt = combined_prompt
                     if status_callback:
                         await status_callback("✅ 참조 이미지 스타일 적용됨")
+                        await status_callback(f"📝 최종 프롬프트: {final_prompt}")
                 else:
                     if status_callback:
                         await status_callback("⚠️ 참조 이미지 분석 실패, 원본 프롬프트 사용")
