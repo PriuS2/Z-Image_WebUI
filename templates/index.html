@@ -713,12 +713,44 @@
         </main>
     </div>
     
-    <!-- 모달: 이미지 뷰어 -->
-    <div class="modal" id="imageModal">
-        <div class="modal-content image-viewer">
-            <button class="modal-close" id="closeImageModal">×</button>
-            <img id="modalImage" src="" alt="">
-            <div class="modal-info" id="modalInfo"></div>
+    <!-- 모달: 이미지 뷰어 (전체화면 미리보기) -->
+    <div class="modal image-preview-modal" id="imageModal">
+        <div class="image-preview-backdrop" id="imagePreviewBackdrop"></div>
+        <div class="image-preview-container">
+            <!-- 상단 컨트롤 -->
+            <div class="image-preview-controls">
+                <div class="preview-controls-left">
+                    <button class="preview-btn" id="btnZoomOut" title="축소 (-)">
+                        <i class="ri-zoom-out-line"></i>
+                    </button>
+                    <span class="zoom-level" id="zoomLevel">100%</span>
+                    <button class="preview-btn" id="btnZoomIn" title="확대 (+)">
+                        <i class="ri-zoom-in-line"></i>
+                    </button>
+                    <button class="preview-btn" id="btnZoomFit" title="화면에 맞추기">
+                        <i class="ri-fullscreen-line"></i>
+                    </button>
+                    <button class="preview-btn" id="btnZoomOriginal" title="원본 크기 (1:1)">
+                        <i class="ri-aspect-ratio-line"></i> 1:1
+                    </button>
+                </div>
+                <div class="preview-controls-right">
+                    <button class="preview-btn" id="btnDownloadImage" title="다운로드">
+                        <i class="ri-download-2-line"></i>
+                    </button>
+                    <button class="preview-btn preview-close" id="closeImageModal" title="닫기 (ESC)">
+                        <i class="ri-close-line"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- 이미지 영역 -->
+            <div class="image-preview-wrapper" id="imagePreviewWrapper">
+                <img id="modalImage" src="" alt="" draggable="false">
+            </div>
+            
+            <!-- 이미지 정보 -->
+            <div class="image-preview-info" id="modalInfo"></div>
         </div>
     </div>
     

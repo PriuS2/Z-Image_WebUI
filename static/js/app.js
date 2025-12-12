@@ -1875,25 +1875,238 @@ function switchTab(tabId) {
     if (tabId === 'edit') loadEditQuantizationOptions();
 }
 
+// ============= 이미지 미리보기 (줌/드래그 지원) =============
+let imagePreviewState = {
+    scale: 1,
+    translateX: 0,
+    translateY: 0,
+    isDragging: false,
+    startX: 0,
+    startY: 0,
+    lastTranslateX: 0,
+    lastTranslateY: 0,
+    currentPath: '',
+    fitMode: true
+};
+
 function showImageModal(path, metadata) {
     const modal = document.getElementById('imageModal');
     const img = document.getElementById('modalImage');
     const info = document.getElementById('modalInfo');
+    const wrapper = document.getElementById('imagePreviewWrapper');
+    
+    // 상태 초기화
+    imagePreviewState = {
+        scale: 1,
+        translateX: 0,
+        translateY: 0,
+        isDragging: false,
+        startX: 0,
+        startY: 0,
+        lastTranslateX: 0,
+        lastTranslateY: 0,
+        currentPath: path,
+        fitMode: true
+    };
     
     img.src = path;
+    wrapper.classList.add('fit-mode');
+    updateImageTransform();
+    updateZoomLevel();
     
     if (metadata) {
         let infoText = '';
-        if (metadata.prompt) infoText += `프롬프트: ${metadata.prompt}\n`;
-        if (metadata.seed) infoText += `시드: ${metadata.seed}\n`;
-        if (metadata.width && metadata.height) infoText += `해상도: ${metadata.width}×${metadata.height}\n`;
-        if (metadata.steps) infoText += `스텝: ${metadata.steps}\n`;
+        if (metadata.prompt) infoText += `📝 프롬프트: ${metadata.prompt}\n`;
+        if (metadata.seed) infoText += `🎲 시드: ${metadata.seed}\n`;
+        if (metadata.width && metadata.height) infoText += `📐 해상도: ${metadata.width}×${metadata.height}\n`;
+        if (metadata.steps) infoText += `🔄 스텝: ${metadata.steps}\n`;
         info.textContent = infoText;
     } else {
         info.textContent = '';
     }
     
     modal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function updateImageTransform() {
+    const img = document.getElementById('modalImage');
+    const wrapper = document.getElementById('imagePreviewWrapper');
+    
+    if (imagePreviewState.fitMode) {
+        img.style.transform = '';
+        wrapper.classList.add('fit-mode');
+    } else {
+        wrapper.classList.remove('fit-mode');
+        img.style.transform = `translate(${imagePreviewState.translateX}px, ${imagePreviewState.translateY}px) scale(${imagePreviewState.scale})`;
+    }
+}
+
+function updateZoomLevel() {
+    const zoomEl = document.getElementById('zoomLevel');
+    if (zoomEl) {
+        zoomEl.textContent = `${Math.round(imagePreviewState.scale * 100)}%`;
+    }
+}
+
+function zoomImage(delta) {
+    const wrapper = document.getElementById('imagePreviewWrapper');
+    
+    // 맞춤 모드에서 줌 시작하면 현재 크기 기준으로 전환
+    if (imagePreviewState.fitMode) {
+        imagePreviewState.fitMode = false;
+        imagePreviewState.scale = 1;
+        imagePreviewState.translateX = 0;
+        imagePreviewState.translateY = 0;
+    }
+    
+    const newScale = Math.max(0.1, Math.min(10, imagePreviewState.scale + delta));
+    imagePreviewState.scale = newScale;
+    
+    updateImageTransform();
+    updateZoomLevel();
+}
+
+function zoomToFit() {
+    imagePreviewState.fitMode = true;
+    imagePreviewState.scale = 1;
+    imagePreviewState.translateX = 0;
+    imagePreviewState.translateY = 0;
+    updateImageTransform();
+    updateZoomLevel();
+}
+
+function zoomToOriginal() {
+    const img = document.getElementById('modalImage');
+    imagePreviewState.fitMode = false;
+    imagePreviewState.scale = 1;
+    imagePreviewState.translateX = 0;
+    imagePreviewState.translateY = 0;
+    updateImageTransform();
+    updateZoomLevel();
+}
+
+function downloadPreviewImage() {
+    if (imagePreviewState.currentPath) {
+        const link = document.createElement('a');
+        link.href = imagePreviewState.currentPath;
+        link.download = imagePreviewState.currentPath.split('/').pop() || 'image.png';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+}
+
+function closeImageModal() {
+    const modal = document.getElementById('imageModal');
+    modal.classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+// 이미지 드래그 이벤트
+function initImagePreviewDrag() {
+    const wrapper = document.getElementById('imagePreviewWrapper');
+    if (!wrapper) return;
+    
+    wrapper.addEventListener('mousedown', (e) => {
+        if (imagePreviewState.fitMode) return;
+        
+        imagePreviewState.isDragging = true;
+        imagePreviewState.startX = e.clientX;
+        imagePreviewState.startY = e.clientY;
+        imagePreviewState.lastTranslateX = imagePreviewState.translateX;
+        imagePreviewState.lastTranslateY = imagePreviewState.translateY;
+        wrapper.style.cursor = 'grabbing';
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+        if (!imagePreviewState.isDragging) return;
+        
+        const deltaX = e.clientX - imagePreviewState.startX;
+        const deltaY = e.clientY - imagePreviewState.startY;
+        
+        imagePreviewState.translateX = imagePreviewState.lastTranslateX + deltaX;
+        imagePreviewState.translateY = imagePreviewState.lastTranslateY + deltaY;
+        
+        updateImageTransform();
+    });
+    
+    document.addEventListener('mouseup', () => {
+        if (imagePreviewState.isDragging) {
+            imagePreviewState.isDragging = false;
+            const wrapper = document.getElementById('imagePreviewWrapper');
+            if (wrapper) wrapper.style.cursor = 'grab';
+        }
+    });
+    
+    // 마우스 휠 줌
+    wrapper.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        zoomImage(delta);
+    }, { passive: false });
+    
+    // 더블클릭으로 맞춤/원본 토글
+    wrapper.addEventListener('dblclick', () => {
+        if (imagePreviewState.fitMode) {
+            zoomToOriginal();
+        } else {
+            zoomToFit();
+        }
+    });
+}
+
+// 터치 지원
+function initImagePreviewTouch() {
+    const wrapper = document.getElementById('imagePreviewWrapper');
+    if (!wrapper) return;
+    
+    let initialDistance = 0;
+    let initialScale = 1;
+    
+    wrapper.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+            initialDistance = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+            );
+            initialScale = imagePreviewState.scale;
+            if (imagePreviewState.fitMode) {
+                imagePreviewState.fitMode = false;
+                imagePreviewState.scale = 1;
+                initialScale = 1;
+            }
+        } else if (e.touches.length === 1 && !imagePreviewState.fitMode) {
+            imagePreviewState.isDragging = true;
+            imagePreviewState.startX = e.touches[0].clientX;
+            imagePreviewState.startY = e.touches[0].clientY;
+            imagePreviewState.lastTranslateX = imagePreviewState.translateX;
+            imagePreviewState.lastTranslateY = imagePreviewState.translateY;
+        }
+    }, { passive: true });
+    
+    wrapper.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2) {
+            const currentDistance = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+            );
+            const scaleChange = currentDistance / initialDistance;
+            imagePreviewState.scale = Math.max(0.1, Math.min(10, initialScale * scaleChange));
+            updateImageTransform();
+            updateZoomLevel();
+        } else if (e.touches.length === 1 && imagePreviewState.isDragging) {
+            const deltaX = e.touches[0].clientX - imagePreviewState.startX;
+            const deltaY = e.touches[0].clientY - imagePreviewState.startY;
+            imagePreviewState.translateX = imagePreviewState.lastTranslateX + deltaX;
+            imagePreviewState.translateY = imagePreviewState.lastTranslateY + deltaY;
+            updateImageTransform();
+        }
+    }, { passive: true });
+    
+    wrapper.addEventListener('touchend', () => {
+        imagePreviewState.isDragging = false;
+    });
 }
 
 function closeModal(modalId) {
@@ -2129,8 +2342,45 @@ document.addEventListener('DOMContentLoaded', () => {
         btnRefreshSessions.addEventListener('click', loadSessionList);
     }
     
+    // 이미지 미리보기 모달 이벤트 설정
+    initImagePreviewDrag();
+    initImagePreviewTouch();
+    
     // 모달 닫기
-    document.getElementById('closeImageModal').addEventListener('click', () => closeModal('imageModal'));
+    document.getElementById('closeImageModal').addEventListener('click', closeImageModal);
+    document.getElementById('imagePreviewBackdrop').addEventListener('click', closeImageModal);
+    
+    // 줌 컨트롤
+    document.getElementById('btnZoomIn').addEventListener('click', () => zoomImage(0.25));
+    document.getElementById('btnZoomOut').addEventListener('click', () => zoomImage(-0.25));
+    document.getElementById('btnZoomFit').addEventListener('click', zoomToFit);
+    document.getElementById('btnZoomOriginal').addEventListener('click', zoomToOriginal);
+    document.getElementById('btnDownloadImage').addEventListener('click', downloadPreviewImage);
+    
+    // 키보드 단축키
+    document.addEventListener('keydown', (e) => {
+        const modal = document.getElementById('imageModal');
+        if (!modal.classList.contains('active')) return;
+        
+        switch(e.key) {
+            case 'Escape':
+                closeImageModal();
+                break;
+            case '+':
+            case '=':
+                zoomImage(0.25);
+                break;
+            case '-':
+                zoomImage(-0.25);
+                break;
+            case '0':
+                zoomToFit();
+                break;
+            case '1':
+                zoomToOriginal();
+                break;
+        }
+    });
     
     // 모달 외부 클릭 닫기
     document.querySelectorAll('.modal').forEach(modal => {
@@ -2914,13 +3164,17 @@ async function loadEditHistory() {
             const item = document.createElement('div');
             item.className = 'edit-history-item';
             
+            // 이미지에 클릭 이벤트를 위해 데이터 저장
+            const originalPath = entry.original_image_path || '';
+            const resultPath = (entry.result_image_paths && entry.result_image_paths.length > 0) ? entry.result_image_paths[0] : '';
+            
             let imagesHtml = '<div class="edit-history-images">';
-            if (entry.original_image_path) {
-                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${entry.original_image_path}" alt="원본"></div>`;
+            if (originalPath) {
+                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${originalPath}" alt="원본" data-path="${originalPath}" data-type="original"></div>`;
             }
             imagesHtml += '<span class="edit-history-arrow"><i class="ri-arrow-right-line"></i></span>';
-            if (entry.result_image_paths && entry.result_image_paths.length > 0) {
-                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${entry.result_image_paths[0]}" alt="결과"></div>`;
+            if (resultPath) {
+                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${resultPath}" alt="결과" data-path="${resultPath}" data-type="result"></div>`;
             }
             imagesHtml += '</div>';
             
@@ -2942,6 +3196,20 @@ async function loadEditHistory() {
                 <div class="edit-history-item-prompt"><span class="lang-badge us">🇺🇸</span> ${escapeHtml(entry.prompt)}</div>
                 ${chainBadge}
             `;
+            
+            // 이미지 클릭 이벤트 추가
+            item.querySelectorAll('.edit-history-image-wrapper img').forEach(img => {
+                img.style.cursor = 'pointer';
+                img.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const path = img.dataset.path;
+                    const type = img.dataset.type === 'original' ? '원본 이미지' : '편집 결과';
+                    showImageModal(path, { 
+                        prompt: `${type}\n편집 프롬프트: ${entry.prompt}`,
+                        seed: entry.seed
+                    });
+                });
+            });
             
             list.appendChild(item);
         });
