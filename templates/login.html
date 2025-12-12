@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Z-Image WebUI - 로그인</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/auth.css">
+</head>
+<body>
+    <div class="auth-container">
+        <!-- 배경 효과 -->
+        <div class="auth-bg">
+            <div class="auth-bg-gradient"></div>
+            <div class="auth-bg-pattern"></div>
+        </div>
+        
+        <!-- 인증 카드 -->
+        <div class="auth-card">
+            <!-- 로고 -->
+            <div class="auth-logo">
+                <i class="fas fa-wand-magic-sparkles"></i>
+                <h1>Z-Image</h1>
+                <p>AI 이미지 생성 WebUI</p>
+            </div>
+            
+            <!-- 탭 -->
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">로그인</button>
+                <button class="auth-tab" data-tab="register">회원가입</button>
+            </div>
+            
+            <!-- 로그인 폼 -->
+            <form id="loginForm" class="auth-form active">
+                <div class="form-group">
+                    <label for="loginUsername">
+                        <i class="fas fa-user"></i>
+                        아이디
+                    </label>
+                    <input type="text" id="loginUsername" name="username" 
+                           placeholder="아이디를 입력하세요" required autocomplete="username">
+                </div>
+                
+                <div class="form-group">
+                    <label for="loginPassword">
+                        <i class="fas fa-lock"></i>
+                        비밀번호
+                    </label>
+                    <div class="password-input">
+                        <input type="password" id="loginPassword" name="password" 
+                               placeholder="비밀번호를 입력하세요" required autocomplete="current-password">
+                        <button type="button" class="toggle-password" tabindex="-1">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="form-error" id="loginError"></div>
+                
+                <button type="submit" class="auth-btn">
+                    <i class="fas fa-sign-in-alt"></i>
+                    로그인
+                </button>
+            </form>
+            
+            <!-- 회원가입 폼 -->
+            <form id="registerForm" class="auth-form">
+                <div class="form-group">
+                    <label for="registerUsername">
+                        <i class="fas fa-user"></i>
+                        아이디
+                    </label>
+                    <input type="text" id="registerUsername" name="username" 
+                           placeholder="영문으로 시작, 3자 이상" required autocomplete="username">
+                    <small class="form-hint">영문, 숫자, 언더스코어(_) 사용 가능</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="registerPassword">
+                        <i class="fas fa-lock"></i>
+                        비밀번호
+                    </label>
+                    <div class="password-input">
+                        <input type="password" id="registerPassword" name="password" 
+                               placeholder="4자 이상" required autocomplete="new-password">
+                        <button type="button" class="toggle-password" tabindex="-1">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="registerPasswordConfirm">
+                        <i class="fas fa-lock"></i>
+                        비밀번호 확인
+                    </label>
+                    <div class="password-input">
+                        <input type="password" id="registerPasswordConfirm" name="password_confirm" 
+                               placeholder="비밀번호를 다시 입력하세요" required autocomplete="new-password">
+                        <button type="button" class="toggle-password" tabindex="-1">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="form-error" id="registerError"></div>
+                
+                <button type="submit" class="auth-btn">
+                    <i class="fas fa-user-plus"></i>
+                    회원가입
+                </button>
+            </form>
+            
+            <!-- 푸터 -->
+            <div class="auth-footer">
+                <p>© 2024 Z-Image WebUI</p>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/js/auth.js"></script>
+</body>
+</html>
+

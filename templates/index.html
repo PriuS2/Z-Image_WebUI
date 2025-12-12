@@ -58,6 +58,12 @@
                 <i class="ri-user-line"></i>
                 <span id="userCountText">1</span>
             </div>
+            
+            <!-- 로그인된 사용자 정보 -->
+            <div class="user-info" id="userInfo" title="로그인 정보">
+                <i class="ri-user-3-fill"></i>
+                <span id="currentUsername">{{ user.username if user else '' }}</span>
+            </div>
         </aside>
         
         <!-- 메인 컨텐츠 -->
@@ -434,6 +440,26 @@
                     <h2><i class="ri-settings-3-line"></i> 설정</h2>
                 </div>
                 
+                <!-- 계정 설정 -->
+                <div class="settings-section" id="accountSection">
+                    <h3>👤 계정</h3>
+                    <div class="account-info">
+                        <div class="account-user">
+                            <i class="ri-user-3-fill"></i>
+                            <span id="accountUsername">{{ user.username if user else '' }}</span>
+                            <span class="admin-badge" id="adminBadge" style="display: none;">관리자</span>
+                        </div>
+                    </div>
+                    <div class="setting-actions">
+                        <button class="btn btn-secondary" id="btnChangePassword">
+                            <i class="ri-lock-password-line"></i> 비밀번호 변경
+                        </button>
+                        <button class="btn btn-danger" id="btnLogout">
+                            <i class="ri-logout-box-line"></i> 로그아웃
+                        </button>
+                    </div>
+                </div>
+                
                 <div class="settings-section">
                     <h3>🤖 모델 설정</h3>
                     <div class="setting-group">
@@ -676,13 +702,26 @@
                     </div>
                 </div>
                 
+                <!-- 사용자 관리 (관리자 전용) -->
+                <div class="settings-section" id="userManagementSection" style="display: none;">
+                    <h3>👤 사용자 관리 (관리자 전용)</h3>
+                    <p class="setting-description">등록된 사용자 계정을 관리합니다.</p>
+                    <div class="user-list" id="userList">
+                        <!-- 동적으로 사용자 목록이 추가됨 -->
+                    </div>
+                    <button class="btn btn-secondary" id="btnRefreshUsers">
+                        <i class="ri-refresh-line"></i> 사용자 목록 새로고침
+                    </button>
+                </div>
+                
                 <!-- 세션 관리 (관리자 전용) -->
                 <div class="settings-section" id="sessionManagementSection" style="display: none;">
-                    <h3>👥 세션 관리 (관리자 전용)</h3>
-                    <p class="setting-description">접속한 사용자들의 세션 데이터를 관리합니다.</p>
+                    <h3>📊 세션 관리 (관리자 전용)</h3>
+                    <p class="setting-description">현재 활성 세션을 관리합니다.</p>
                     <div class="session-list" id="sessionList">
                         <div class="session-list-header">
                             <span>세션 ID</span>
+                            <span>사용자</span>
                             <span>마지막 활동</span>
                             <span>데이터 크기</span>
                             <span>작업</span>
@@ -824,6 +863,37 @@
             <div class="modal-actions">
                 <button class="btn btn-secondary" onclick="closeModal('gallerySelectModal')">취소</button>
             </div>
+        </div>
+    </div>
+    
+    <!-- 모달: 비밀번호 변경 -->
+    <div class="modal" id="changePasswordModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="ri-lock-password-line"></i> 비밀번호 변경</h3>
+                <button class="modal-close" onclick="closeModal('changePasswordModal')">×</button>
+            </div>
+            <form id="changePasswordForm">
+                <div class="form-group">
+                    <label>현재 비밀번호</label>
+                    <input type="password" id="currentPasswordInput" required>
+                </div>
+                <div class="form-group">
+                    <label>새 비밀번호</label>
+                    <input type="password" id="newPasswordInput" required>
+                </div>
+                <div class="form-group">
+                    <label>새 비밀번호 확인</label>
+                    <input type="password" id="newPasswordConfirmInput" required>
+                </div>
+                <div class="form-error" id="changePasswordError"></div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('changePasswordModal')">취소</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="ri-check-line"></i> 변경
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
     
