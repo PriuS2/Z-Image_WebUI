@@ -50,6 +50,7 @@ from utils.favorites import get_favorites_manager_sync, FavoritesManager
 from utils.upscaler import upscaler, REALESRGAN_AVAILABLE
 from utils.session import session_manager, is_localhost, SessionManager, SessionInfo
 from utils.queue_manager import generation_queue, GenerationQueueManager
+from utils.auth import auth_manager, User
 from utils.longcat_edit import longcat_edit_manager
 from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager
 from utils.edit_llm import edit_translator, edit_enhancer, edit_suggester
@@ -266,6 +267,28 @@ class EditConversationUpdateRequest(BaseModel):
     conversation: List[Dict[str, Any]]
 
 
+# ============= 인증 관련 Pydantic 모델 =============
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    password_confirm: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    new_password_confirm: str
+
+
+class ResetPasswordRequest(BaseModel):
+    new_password: Optional[str] = None  # None이면 임시 비밀번호 자동 생성
+
+
 # ============= 유틸리티 함수 =============
 def get_device():
     """사용 가능한 디바이스 반환"""
@@ -293,12 +316,23 @@ def get_vram_info() -> str:
 
 
 async def get_session_from_request(request: Request) -> SessionInfo:
-    """요청에서 세션 가져오기 또는 생성 - 클라이언트 IP 기반"""
+    """요청에서 세션 가져오기 또는 생성"""
     session_id = request.cookies.get(SessionManager.COOKIE_NAME)
-    # 클라이언트 IP 가져오기
-    client_host = request.client.host if request.client else None
-    session = await session_manager.get_or_create_session(session_id, client_host)
+    session = await session_manager.get_or_create_session(session_id)
     return session
+
+
+def require_auth(session: SessionInfo) -> None:
+    """인증 필수 체크 - 로그인하지 않으면 예외 발생"""
+    if not session.is_authenticated:
+        raise HTTPException(401, "로그인이 필요합니다.")
+
+
+def require_admin(request: Request) -> None:
+    """관리자 권한 체크 - localhost가 아니면 예외 발생"""
+    client_host = request.client.host if request.client else None
+    if not is_localhost(client_host):
+        raise HTTPException(403, "관리자 권한이 필요합니다.")
 
 
 def set_session_cookie(response: Response, session: SessionInfo):
@@ -523,7 +557,7 @@ async def execute_generation(request_data: dict) -> dict:
             "base64": image_to_base64(image),
             "filename": filename,
             "seed": current_seed,
-            "path": f"/outputs/{session_id}/{filename}" if session else f"/outputs/{filename}"
+            "path": f"/outputs/{session.data_id}/{filename}" if session else f"/outputs/{filename}"
         })
         
         # 각 이미지 생성 후 메모리 정리 (여러 장 생성 시 OOM 방지)
@@ -536,9 +570,9 @@ async def execute_generation(request_data: dict) -> dict:
         torch.cuda.synchronize()
     gc.collect()
     
-    # 히스토리 추가 (세션별)
+    # 히스토리 추가 (사용자별)
     if session:
-        history_mgr = get_history_manager_sync(session_id)
+        history_mgr = get_history_manager_sync(session.data_id)
     else:
         from utils.history import history_manager
         history_mgr = history_manager
@@ -613,11 +647,42 @@ async def serve_legacy_output(filename: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    """메인 페이지"""
+    """메인 페이지 - 로그인 필수"""
     update_activity()
     session = await get_session_from_request(request)
     
-    response = templates.TemplateResponse("index.html", {"request": request})
+    # 로그인하지 않은 경우 로그인 페이지로 리다이렉트
+    if not session.is_authenticated:
+        from fastapi.responses import RedirectResponse
+        response = RedirectResponse(url="/login", status_code=302)
+        set_session_cookie(response, session)
+        return response
+    
+    response = templates.TemplateResponse("index.html", {
+        "request": request,
+        "user": {
+            "id": session.user_id,
+            "username": session.username,
+        }
+    })
+    set_session_cookie(response, session)
+    
+    return response
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """로그인 페이지"""
+    session = await get_session_from_request(request)
+    
+    # 이미 로그인된 경우 메인 페이지로 리다이렉트
+    if session.is_authenticated:
+        from fastapi.responses import RedirectResponse
+        response = RedirectResponse(url="/", status_code=302)
+        set_session_cookie(response, session)
+        return response
+    
+    response = templates.TemplateResponse("login.html", {"request": request})
     set_session_cookie(response, session)
     
     return response
@@ -1046,9 +1111,10 @@ async def get_model_download_status():
 # ============= 세션별 히스토리 API =============
 @app.get("/api/history")
 async def get_history(request: Request):
-    """히스토리 목록 (세션별)"""
+    """히스토리 목록 (사용자별)"""
     session = await get_session_from_request(request)
-    history_mgr = get_history_manager_sync(session.session_id)
+    require_auth(session)
+    history_mgr = get_history_manager_sync(session.data_id)
     entries = history_mgr.get_all()
     
     response = JSONResponse(content={"history": [e.to_dict() for e in entries[:50]]})
@@ -1058,9 +1124,10 @@ async def get_history(request: Request):
 
 @app.get("/api/history/{history_id}")
 async def get_history_detail(history_id: str, request: Request):
-    """히스토리 상세 정보 (세션별)"""
+    """히스토리 상세 정보 (사용자별)"""
     session = await get_session_from_request(request)
-    history_mgr = get_history_manager_sync(session.session_id)
+    require_auth(session)
+    history_mgr = get_history_manager_sync(session.data_id)
     entry = history_mgr.get_by_id(history_id)
     
     if not entry:
@@ -1071,9 +1138,10 @@ async def get_history_detail(history_id: str, request: Request):
 
 @app.patch("/api/history/{history_id}/conversation")
 async def update_history_conversation(history_id: str, request: Request, conv_request: ConversationUpdateRequest):
-    """히스토리의 대화 내용 업데이트 (세션별)"""
+    """히스토리의 대화 내용 업데이트 (사용자별)"""
     session = await get_session_from_request(request)
-    history_mgr = get_history_manager_sync(session.session_id)
+    require_auth(session)
+    history_mgr = get_history_manager_sync(session.data_id)
     entry = history_mgr.get_by_id(history_id)
     
     if not entry:
@@ -1087,19 +1155,21 @@ async def update_history_conversation(history_id: str, request: Request, conv_re
 
 @app.delete("/api/history")
 async def clear_history(request: Request):
-    """히스토리 삭제 (세션별)"""
+    """히스토리 삭제 (사용자별)"""
     session = await get_session_from_request(request)
-    history_mgr = get_history_manager_sync(session.session_id)
+    require_auth(session)
+    history_mgr = get_history_manager_sync(session.data_id)
     history_mgr.clear()
     return {"success": True}
 
 
-# ============= 세션별 즐겨찾기 API =============
+# ============= 사용자별 즐겨찾기 API =============
 @app.get("/api/favorites")
 async def get_favorites(request: Request):
-    """즐겨찾기 목록 (세션별)"""
+    """즐겨찾기 목록 (사용자별)"""
     session = await get_session_from_request(request)
-    fav_mgr = get_favorites_manager_sync(session.session_id)
+    require_auth(session)
+    fav_mgr = get_favorites_manager_sync(session.data_id)
     entries = fav_mgr.get_all()
     
     response = JSONResponse(content={"favorites": [e.to_dict() for e in entries]})
@@ -1109,9 +1179,10 @@ async def get_favorites(request: Request):
 
 @app.post("/api/favorites")
 async def add_favorite(request: Request, fav_request: FavoriteRequest):
-    """즐겨찾기 추가 (세션별)"""
+    """즐겨찾기 추가 (사용자별)"""
     session = await get_session_from_request(request)
-    fav_mgr = get_favorites_manager_sync(session.session_id)
+    require_auth(session)
+    fav_mgr = get_favorites_manager_sync(session.data_id)
     entry = fav_mgr.add(
         name=fav_request.name,
         prompt=fav_request.prompt,
@@ -1122,9 +1193,10 @@ async def add_favorite(request: Request, fav_request: FavoriteRequest):
 
 @app.delete("/api/favorites/{fav_id}")
 async def delete_favorite(fav_id: str, request: Request):
-    """즐겨찾기 삭제 (세션별)"""
+    """즐겨찾기 삭제 (사용자별)"""
     session = await get_session_from_request(request)
-    fav_mgr = get_favorites_manager_sync(session.session_id)
+    require_auth(session)
+    fav_mgr = get_favorites_manager_sync(session.data_id)
     success = fav_mgr.delete(fav_id)
     return {"success": success}
 
@@ -1132,8 +1204,9 @@ async def delete_favorite(fav_id: str, request: Request):
 # ============= 세션별 갤러리 API =============
 @app.get("/api/gallery")
 async def get_gallery(request: Request):
-    """갤러리 이미지 목록 (세션별)"""
+    """갤러리 이미지 목록 (사용자별)"""
     session = await get_session_from_request(request)
+    require_auth(session)
     outputs_dir = session.get_outputs_dir()
     
     images = []
@@ -1142,7 +1215,7 @@ async def get_gallery(request: Request):
             metadata = ImageMetadata.read_metadata(f)
             images.append({
                 "filename": f.name,
-                "path": f"/outputs/{session.session_id}/{f.name}",
+                "path": f"/outputs/{session.data_id}/{f.name}",
                 "metadata": metadata
             })
     
@@ -1359,13 +1432,179 @@ async def reset_session_prompts(request: Request):
     return response
 
 
+# ============= 인증 API =============
+@app.post("/api/auth/register")
+async def register(request: Request, data: RegisterRequest):
+    """회원가입"""
+    session = await get_session_from_request(request)
+    
+    # 비밀번호 확인
+    if data.password != data.password_confirm:
+        raise HTTPException(400, "비밀번호가 일치하지 않습니다.")
+    
+    # 회원가입
+    success, message, user = auth_manager.create_user(data.username, data.password)
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    response = JSONResponse(content={
+        "success": True,
+        "message": message,
+        "user": user.to_dict() if user else None
+    })
+    set_session_cookie(response, session)
+    return response
+
+
+@app.post("/api/auth/login")
+async def login(request: Request, data: LoginRequest):
+    """로그인"""
+    session = await get_session_from_request(request)
+    
+    # 인증
+    success, message, user = auth_manager.authenticate(data.username, data.password)
+    
+    if not success or not user:
+        raise HTTPException(401, message)
+    
+    # 세션에 로그인 정보 연결
+    await session_manager.login_session(session.session_id, user.id, user.username)
+    
+    response = JSONResponse(content={
+        "success": True,
+        "message": message,
+        "user": user.to_dict()
+    })
+    set_session_cookie(response, session)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    """로그아웃"""
+    session = await get_session_from_request(request)
+    
+    if session.is_authenticated:
+        await session_manager.logout_session(session.session_id)
+    
+    response = JSONResponse(content={
+        "success": True,
+        "message": "로그아웃되었습니다."
+    })
+    set_session_cookie(response, session)
+    return response
+
+
+@app.get("/api/auth/me")
+async def get_current_user(request: Request):
+    """현재 로그인된 사용자 정보"""
+    session = await get_session_from_request(request)
+    
+    # 관리자 여부 확인
+    client_host = request.client.host if request.client else None
+    is_admin = is_localhost(client_host)
+    
+    if not session.is_authenticated:
+        response = JSONResponse(content={
+            "authenticated": False,
+            "user": None,
+            "is_admin": is_admin
+        })
+    else:
+        user = auth_manager.get_user_by_id(session.user_id)
+        response = JSONResponse(content={
+            "authenticated": True,
+            "user": user.to_dict() if user else {
+                "id": session.user_id,
+                "username": session.username
+            },
+            "is_admin": is_admin
+        })
+    
+    set_session_cookie(response, session)
+    return response
+
+
+@app.post("/api/auth/change-password")
+async def change_password(request: Request, data: ChangePasswordRequest):
+    """비밀번호 변경 (본인)"""
+    session = await get_session_from_request(request)
+    require_auth(session)
+    
+    # 비밀번호 확인
+    if data.new_password != data.new_password_confirm:
+        raise HTTPException(400, "새 비밀번호가 일치하지 않습니다.")
+    
+    # 비밀번호 변경
+    success, message = auth_manager.change_password(
+        session.user_id,
+        data.current_password,
+        data.new_password
+    )
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    response = JSONResponse(content={
+        "success": True,
+        "message": message
+    })
+    set_session_cookie(response, session)
+    return response
+
+
 # ============= 관리자 API (localhost 전용) =============
+@app.get("/api/admin/users")
+async def get_all_users(request: Request):
+    """모든 사용자 목록 (관리자 전용)"""
+    require_admin(request)
+    
+    users = auth_manager.get_all_users()
+    return {"users": users}
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+async def admin_reset_password(request: Request, user_id: int, data: ResetPasswordRequest):
+    """사용자 비밀번호 초기화 (관리자 전용)"""
+    require_admin(request)
+    
+    success, message, new_password = auth_manager.reset_password(user_id, data.new_password)
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    return {
+        "success": True,
+        "message": message,
+        "new_password": new_password  # 관리자에게 임시 비밀번호 표시
+    }
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(request: Request, user_id: int):
+    """사용자 삭제 (관리자 전용)"""
+    require_admin(request)
+    
+    # 사용자 삭제
+    success, message = auth_manager.delete_user(user_id)
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    # 사용자 데이터도 삭제
+    await session_manager.delete_user_data(user_id)
+    
+    return {
+        "success": True,
+        "message": message
+    }
+
+
 @app.get("/api/admin/sessions")
 async def get_all_sessions(request: Request):
     """모든 세션 목록 (관리자 전용)"""
-    client_host = request.client.host if request.client else None
-    if not is_localhost(client_host):
-        raise HTTPException(403, "관리자 권한이 필요합니다.")
+    require_admin(request)
     
     sessions = session_manager.get_all_sessions()
     return {"sessions": sessions}
@@ -1374,9 +1613,7 @@ async def get_all_sessions(request: Request):
 @app.delete("/api/admin/sessions/{session_id}")
 async def delete_session(session_id: str, request: Request):
     """세션 삭제 (관리자 전용)"""
-    client_host = request.client.host if request.client else None
-    if not is_localhost(client_host):
-        raise HTTPException(403, "관리자 권한이 필요합니다.")
+    require_admin(request)
     
     success = await session_manager.delete_session(session_id)
     return {"success": success}
@@ -1386,9 +1623,13 @@ async def delete_session(session_id: str, request: Request):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str] = Cookie(default=None)):
     """웹소켓 연결 (세션별)"""
-    # 세션 가져오기 - 클라이언트 IP 기반
-    client_host = websocket.client.host if websocket.client else None
-    session = await session_manager.get_or_create_session(z_image_session, client_host)
+    # 세션 가져오기
+    session = await session_manager.get_or_create_session(z_image_session)
+    
+    # 로그인하지 않은 경우 연결 거부
+    if not session.is_authenticated:
+        await websocket.close(code=4001, reason="로그인이 필요합니다.")
+        return
     
     await ws_manager.connect(websocket, session.session_id)
     update_activity()
@@ -1711,11 +1952,11 @@ async def edit_image(
                 "base64": image_to_base64(result_image),
                 "filename": filename,
                 "seed": seed,
-                "path": f"/outputs/{session.session_id}/{filename}"
+                "path": f"/outputs/{session.data_id}/{filename}"
             })
         
         # 히스토리 저장
-        edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+        edit_history_mgr = get_edit_history_manager_sync(session.data_id)
         history_entry = edit_history_mgr.add(
             prompt=final_prompt,
             korean_prompt=korean_prompt,
@@ -1814,9 +2055,10 @@ async def suggest_edits(request: Request, suggest_request: EditSuggestRequest):
 # ============= 편집 히스토리 API =============
 @app.get("/api/edit/history")
 async def get_edit_history(request: Request):
-    """편집 히스토리 목록"""
+    """편집 히스토리 목록 (사용자별)"""
     session = await get_session_from_request(request)
-    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    require_auth(session)
+    edit_history_mgr = get_edit_history_manager_sync(session.data_id)
     entries = edit_history_mgr.get_all()
     
     response = JSONResponse(content={"history": [e.to_dict() for e in entries[:50]]})
@@ -1826,9 +2068,10 @@ async def get_edit_history(request: Request):
 
 @app.get("/api/edit/history/{history_id}")
 async def get_edit_history_detail(history_id: str, request: Request):
-    """편집 히스토리 상세 정보"""
+    """편집 히스토리 상세 정보 (사용자별)"""
     session = await get_session_from_request(request)
-    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    require_auth(session)
+    edit_history_mgr = get_edit_history_manager_sync(session.data_id)
     entry = edit_history_mgr.get_by_id(history_id)
     
     if not entry:
@@ -1839,9 +2082,10 @@ async def get_edit_history_detail(history_id: str, request: Request):
 
 @app.get("/api/edit/history/{history_id}/chain")
 async def get_edit_history_chain(history_id: str, request: Request):
-    """멀티턴 편집 체인 가져오기"""
+    """멀티턴 편집 체인 가져오기 (사용자별)"""
     session = await get_session_from_request(request)
-    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    require_auth(session)
+    edit_history_mgr = get_edit_history_manager_sync(session.data_id)
     chain = edit_history_mgr.get_chain(history_id)
     
     return {"chain": [e.to_dict() for e in chain]}
@@ -1849,9 +2093,10 @@ async def get_edit_history_chain(history_id: str, request: Request):
 
 @app.patch("/api/edit/history/{history_id}/conversation")
 async def update_edit_history_conversation(history_id: str, request: Request, conv_request: EditConversationUpdateRequest):
-    """편집 히스토리 대화 내용 업데이트"""
+    """편집 히스토리 대화 내용 업데이트 (사용자별)"""
     session = await get_session_from_request(request)
-    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    require_auth(session)
+    edit_history_mgr = get_edit_history_manager_sync(session.data_id)
     
     success = edit_history_mgr.update_conversation(history_id, conv_request.conversation)
     if not success:
@@ -1862,18 +2107,20 @@ async def update_edit_history_conversation(history_id: str, request: Request, co
 
 @app.delete("/api/edit/history")
 async def clear_edit_history(request: Request):
-    """편집 히스토리 삭제"""
+    """편집 히스토리 삭제 (사용자별)"""
     session = await get_session_from_request(request)
-    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    require_auth(session)
+    edit_history_mgr = get_edit_history_manager_sync(session.data_id)
     edit_history_mgr.clear()
     return {"success": True}
 
 
 @app.delete("/api/edit/history/{history_id}")
 async def delete_edit_history_entry(history_id: str, request: Request):
-    """편집 히스토리 항목 삭제"""
+    """편집 히스토리 항목 삭제 (사용자별)"""
     session = await get_session_from_request(request)
-    edit_history_mgr = get_edit_history_manager_sync(session.session_id)
+    require_auth(session)
+    edit_history_mgr = get_edit_history_manager_sync(session.data_id)
     success = edit_history_mgr.delete(history_id)
     return {"success": success}
 

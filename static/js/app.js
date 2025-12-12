@@ -917,11 +917,10 @@ function updateAdminUI() {
 
 // ============= 세션 관리 (관리자 전용) =============
 async function loadSessionList() {
-    if (!isAdmin) return;
-    
     try {
         const result = await apiCall('/admin/sessions');
         const sessionList = document.getElementById('sessionList');
+        if (!sessionList) return;
         
         // 헤더 유지하고 나머지 삭제
         const header = sessionList.querySelector('.session-list-header');
@@ -931,8 +930,10 @@ async function loadSessionList() {
         result.sessions.forEach(session => {
             const item = document.createElement('div');
             item.className = 'session-list-item';
+            const usernameDisplay = session.username || (session.is_authenticated ? '로그인됨' : '비로그인');
             item.innerHTML = `
                 <span class="session-id" title="${session.session_id}">${session.session_id.substring(0, 8)}...</span>
+                <span class="session-user">${usernameDisplay}</span>
                 <span class="session-activity">${formatDate(session.last_activity)}</span>
                 <span class="session-size">${session.data_size}</span>
                 <button class="btn btn-xs btn-danger" onclick="deleteSession('${session.session_id}')">
@@ -2753,6 +2754,9 @@ function escapeHtml(text) {
 
 // ============= 이벤트 리스너 =============
 document.addEventListener('DOMContentLoaded', () => {
+    // 현재 사용자 정보 로드
+    loadCurrentUser();
+    
     // WebSocket 연결
     connectWebSocket();
     
@@ -2974,6 +2978,31 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnRefreshSessions = document.getElementById('btnRefreshSessions');
     if (btnRefreshSessions) {
         btnRefreshSessions.addEventListener('click', loadSessionList);
+    }
+    
+    // ============= 인증 관련 이벤트 =============
+    // 로그아웃 버튼
+    const btnLogout = document.getElementById('btnLogout');
+    if (btnLogout) {
+        btnLogout.addEventListener('click', logout);
+    }
+    
+    // 비밀번호 변경 버튼
+    const btnChangePassword = document.getElementById('btnChangePassword');
+    if (btnChangePassword) {
+        btnChangePassword.addEventListener('click', openChangePasswordModal);
+    }
+    
+    // 비밀번호 변경 폼
+    const changePasswordForm = document.getElementById('changePasswordForm');
+    if (changePasswordForm) {
+        changePasswordForm.addEventListener('submit', handleChangePassword);
+    }
+    
+    // 관리자: 사용자 목록 새로고침
+    const btnRefreshUsers = document.getElementById('btnRefreshUsers');
+    if (btnRefreshUsers) {
+        btnRefreshUsers.addEventListener('click', loadUserList);
     }
     
     // 이미지 미리보기 모달 이벤트 설정
@@ -3981,4 +4010,213 @@ async function clearEditHistory() {
     } catch (error) {
         addEditMessage('system', `❌ 삭제 실패: ${error.message}`, 'error');
     }
+}
+
+
+// ============= 인증 관련 함수 =============
+
+/**
+ * 현재 사용자 정보 로드
+ */
+async function loadCurrentUser() {
+    try {
+        const data = await apiCall('/auth/me', 'GET');
+        
+        // 관리자 배지 표시
+        const adminBadge = document.getElementById('adminBadge');
+        if (adminBadge) {
+            adminBadge.style.display = data.is_admin ? 'inline-block' : 'none';
+        }
+        
+        // 관리자 전용 섹션 표시
+        if (data.is_admin) {
+            const userManagementSection = document.getElementById('userManagementSection');
+            if (userManagementSection) {
+                userManagementSection.style.display = 'block';
+                loadUserList();  // 사용자 목록 로드
+            }
+            
+            const sessionManagementSection = document.getElementById('sessionManagementSection');
+            if (sessionManagementSection) {
+                sessionManagementSection.style.display = 'block';
+                loadSessionList();  // 세션 목록 로드
+            }
+        }
+        
+        return data;
+    } catch (error) {
+        console.error('Failed to load current user:', error);
+        // 인증 실패 시 로그인 페이지로 리다이렉트
+        if (error.status === 401) {
+            window.location.href = '/login';
+        }
+        return null;
+    }
+}
+
+/**
+ * 로그아웃
+ */
+async function logout() {
+    if (!confirm('로그아웃 하시겠습니까?')) return;
+    
+    try {
+        await apiCall('/auth/logout', 'POST');
+        window.location.href = '/login';
+    } catch (error) {
+        console.error('Logout error:', error);
+        // 에러가 나도 로그인 페이지로 이동
+        window.location.href = '/login';
+    }
+}
+
+/**
+ * 비밀번호 변경 모달 열기
+ */
+function openChangePasswordModal() {
+    const modal = document.getElementById('changePasswordModal');
+    if (modal) {
+        modal.classList.add('active');
+        // 폼 초기화
+        document.getElementById('currentPasswordInput').value = '';
+        document.getElementById('newPasswordInput').value = '';
+        document.getElementById('newPasswordConfirmInput').value = '';
+        const errorDiv = document.getElementById('changePasswordError');
+        if (errorDiv) {
+            errorDiv.textContent = '';
+            errorDiv.style.display = 'none';
+        }
+    }
+}
+
+/**
+ * 비밀번호 변경 처리
+ */
+async function handleChangePassword(e) {
+    e.preventDefault();
+    
+    const currentPassword = document.getElementById('currentPasswordInput').value;
+    const newPassword = document.getElementById('newPasswordInput').value;
+    const newPasswordConfirm = document.getElementById('newPasswordConfirmInput').value;
+    const errorDiv = document.getElementById('changePasswordError');
+    
+    // 클라이언트 검증
+    if (!currentPassword || !newPassword || !newPasswordConfirm) {
+        showFormError(errorDiv, '모든 항목을 입력해주세요.');
+        return;
+    }
+    
+    if (newPassword !== newPasswordConfirm) {
+        showFormError(errorDiv, '새 비밀번호가 일치하지 않습니다.');
+        return;
+    }
+    
+    if (newPassword.length < 4) {
+        showFormError(errorDiv, '비밀번호는 4자 이상이어야 합니다.');
+        return;
+    }
+    
+    try {
+        await apiCall('/auth/change-password', 'POST', {
+            current_password: currentPassword,
+            new_password: newPassword,
+            new_password_confirm: newPasswordConfirm
+        });
+        
+        closeModal('changePasswordModal');
+        addMessage('system', '✅ 비밀번호가 변경되었습니다.');
+    } catch (error) {
+        showFormError(errorDiv, error.message || '비밀번호 변경에 실패했습니다.');
+    }
+}
+
+/**
+ * 폼 에러 표시
+ */
+function showFormError(element, message) {
+    if (element) {
+        element.textContent = message;
+        element.style.display = 'block';
+    }
+}
+
+/**
+ * 관리자: 사용자 목록 로드
+ */
+async function loadUserList() {
+    try {
+        const data = await apiCall('/admin/users', 'GET');
+        renderUserList(data.users || []);
+    } catch (error) {
+        console.error('Failed to load user list:', error);
+    }
+}
+
+/**
+ * 관리자: 사용자 목록 렌더링
+ */
+function renderUserList(users) {
+    const container = document.getElementById('userList');
+    if (!container) return;
+    
+    if (users.length === 0) {
+        container.innerHTML = '<div class="empty-message">등록된 사용자가 없습니다.</div>';
+        return;
+    }
+    
+    container.innerHTML = users.map(user => `
+        <div class="user-item" data-user-id="${user.id}">
+            <div class="user-item-info">
+                <span class="user-item-name">${user.username}</span>
+                <span class="user-item-date">가입: ${formatDate(user.created_at)}</span>
+                <span class="user-item-login">${user.last_login ? '최근 로그인: ' + formatDate(user.last_login) : '로그인 기록 없음'}</span>
+            </div>
+            <div class="user-item-actions">
+                <button class="btn btn-sm btn-secondary" onclick="resetUserPassword(${user.id}, '${user.username}')">
+                    <i class="ri-lock-password-line"></i> 비밀번호 초기화
+                </button>
+                <button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id}, '${user.username}')">
+                    <i class="ri-delete-bin-line"></i> 삭제
+                </button>
+            </div>
+        </div>
+    `).join('');
+}
+
+/**
+ * 관리자: 사용자 비밀번호 초기화
+ */
+async function resetUserPassword(userId, username) {
+    if (!confirm(`'${username}' 사용자의 비밀번호를 초기화하시겠습니까?`)) return;
+    
+    try {
+        const data = await apiCall(`/admin/users/${userId}/reset-password`, 'POST', {});
+        alert(`비밀번호가 초기화되었습니다.\n\n새 임시 비밀번호: ${data.new_password}\n\n이 비밀번호를 사용자에게 전달해주세요.`);
+    } catch (error) {
+        alert('비밀번호 초기화 실패: ' + (error.message || '알 수 없는 오류'));
+    }
+}
+
+/**
+ * 관리자: 사용자 삭제
+ */
+async function deleteUser(userId, username) {
+    if (!confirm(`'${username}' 사용자를 삭제하시겠습니까?\n\n모든 데이터가 삭제됩니다.`)) return;
+    
+    try {
+        await apiCall(`/admin/users/${userId}`, 'DELETE');
+        loadUserList();
+        addMessage('system', `✅ '${username}' 사용자가 삭제되었습니다.`);
+    } catch (error) {
+        alert('사용자 삭제 실패: ' + (error.message || '알 수 없는 오류'));
+    }
+}
+
+/**
+ * 날짜 포맷팅
+ */
+function formatDate(dateString) {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleString('ko-KR');
 }
