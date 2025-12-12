@@ -2,7 +2,6 @@
 
 import gc
 import asyncio
-from pathlib import Path
 from typing import Optional, Tuple, Callable, Any
 
 import torch
@@ -10,7 +9,6 @@ from PIL import Image
 
 from config.defaults import (
     LONGCAT_EDIT_MODEL,
-    LONGCAT_EDIT_GGUF_REPO,
     EDIT_QUANTIZATION_OPTIONS,
     DEFAULT_EDIT_SETTINGS,
 )
@@ -71,7 +69,6 @@ class LongCatEditManager:
                     return False, f"지원하지 않는 양자화: {quantization}"
                 
                 repo_id = quant_info["repo"]
-                is_gguf = quant_info.get("is_gguf", False)
                 
                 # 진행 상황 콜백
                 def report_progress(percent: int, label: str, detail: str = ""):
@@ -93,82 +90,36 @@ class LongCatEditManager:
                 
                 checkpoint_dir = model_path if model_path else repo_id
                 
-                if is_gguf:
-                    # GGUF 양자화 모델 로드
-                    from diffusers import FluxTransformer2DModel, GGUFQuantizationConfig
-                    from huggingface_hub import hf_hub_download
-                    
-                    filename = quant_info["filename"]
-                    gguf_repo = quant_info["repo"]
-                    base_model = LONGCAT_EDIT_MODEL
-                    
-                    # GGUF 파일 다운로드
-                    report_progress(10, "📥 GGUF 모델 다운로드 확인 중...", f"파일: {filename}")
-                    gguf_path = await asyncio.to_thread(
-                        hf_hub_download,
-                        repo_id=gguf_repo,
-                        filename=filename
-                    )
-                    
-                    # GGUF Transformer 로드 (원본 모델의 config 사용)
-                    report_progress(30, "🔄 GGUF Transformer 로딩 중...", "양자화 모델 로드 중 (시간이 걸릴 수 있습니다)")
-                    self.transformer = await asyncio.to_thread(
-                        FluxTransformer2DModel.from_single_file,
-                        gguf_path,
-                        config=base_model,
-                        subfolder="transformer",
-                        quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
-                        torch_dtype=torch.bfloat16
-                    )
-                    
-                    # 기본 모델에서 나머지 컴포넌트 로드
-                    report_progress(50, "🔄 Text Processor 로딩 중...", f"기본 모델: {base_model}")
-                    self.text_processor = await asyncio.to_thread(
-                        AutoProcessor.from_pretrained,
-                        base_model,
-                        subfolder="tokenizer"
-                    )
-                    
-                    # 파이프라인 구성 (GGUF transformer 사용)
-                    report_progress(70, "🔗 파이프라인 구성 중...", "GGUF Transformer와 기본 모델 결합")
-                    self.pipe = await asyncio.to_thread(
-                        LongCatImageEditPipeline.from_pretrained,
-                        base_model,
-                        transformer=self.transformer,
-                        text_processor=self.text_processor,
-                        torch_dtype=torch.bfloat16
-                    )
-                else:
-                    # BF16 모델 로드
-                    report_progress(10, "📥 모델 다운로드 확인 중...", f"저장소: {checkpoint_dir}")
-                    
-                    # Text Processor 로드
-                    report_progress(20, "🔄 Text Processor 로딩 중...", "")
-                    self.text_processor = await asyncio.to_thread(
-                        AutoProcessor.from_pretrained,
-                        checkpoint_dir,
-                        subfolder="tokenizer"
-                    )
-                    
-                    # Transformer 로드
-                    report_progress(40, "🔄 Transformer 로딩 중...", "대용량 모델 로드 중 (시간이 걸릴 수 있습니다)")
-                    self.transformer = await asyncio.to_thread(
-                        LongCatImageTransformer2DModel.from_pretrained,
-                        checkpoint_dir,
-                        subfolder="transformer",
-                        torch_dtype=torch.bfloat16,
-                        use_safetensors=True
-                    )
-                    
-                    # 파이프라인 구성
-                    report_progress(70, "🔗 파이프라인 구성 중...", "")
-                    self.pipe = await asyncio.to_thread(
-                        LongCatImageEditPipeline.from_pretrained,
-                        checkpoint_dir,
-                        transformer=self.transformer,
-                        text_processor=self.text_processor,
-                        torch_dtype=torch.bfloat16
-                    )
+                # BF16 모델 로드
+                report_progress(10, "📥 모델 다운로드 확인 중...", f"저장소: {checkpoint_dir}")
+                
+                # Text Processor 로드
+                report_progress(20, "🔄 Text Processor 로딩 중...", "")
+                self.text_processor = await asyncio.to_thread(
+                    AutoProcessor.from_pretrained,
+                    checkpoint_dir,
+                    subfolder="tokenizer"
+                )
+                
+                # Transformer 로드
+                report_progress(40, "🔄 Transformer 로딩 중...", "대용량 모델 로드 중 (시간이 걸릴 수 있습니다)")
+                self.transformer = await asyncio.to_thread(
+                    LongCatImageTransformer2DModel.from_pretrained,
+                    checkpoint_dir,
+                    subfolder="transformer",
+                    torch_dtype=torch.bfloat16,
+                    use_safetensors=True
+                )
+                
+                # 파이프라인 구성
+                report_progress(70, "🔗 파이프라인 구성 중...", "")
+                self.pipe = await asyncio.to_thread(
+                    LongCatImageEditPipeline.from_pretrained,
+                    checkpoint_dir,
+                    transformer=self.transformer,
+                    text_processor=self.text_processor,
+                    torch_dtype=torch.bfloat16
+                )
                 
                 # 디바이스 설정
                 report_progress(85, f"🚀 {self.device.upper()}로 모델 전송 중...", "")

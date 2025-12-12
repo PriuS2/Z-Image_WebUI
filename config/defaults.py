@@ -22,7 +22,6 @@ GGUF_MODEL_REPO=jayn7/Z-Image-Turbo-GGUF
 
 # ===== LongCat-Image-Edit Model Settings =====
 LONGCAT_EDIT_MODEL=meituan-longcat/LongCat-Image-Edit
-LONGCAT_EDIT_GGUF_REPO=stduhpf/LongCat-Image-Edit-gguf
 LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT=10
 
 # ===== LLM Settings =====
@@ -78,7 +77,6 @@ GGUF_MODEL_REPO = os.getenv("GGUF_MODEL_REPO", "jayn7/Z-Image-Turbo-GGUF")
 
 # ===== LongCat-Image-Edit 모델 설정 =====
 LONGCAT_EDIT_MODEL = os.getenv("LONGCAT_EDIT_MODEL", "meituan-longcat/LongCat-Image-Edit")
-LONGCAT_EDIT_GGUF_REPO = os.getenv("LONGCAT_EDIT_GGUF_REPO", "stduhpf/LongCat-Image-Edit-gguf")
 LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT = int(os.getenv("LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT", "10"))
 
 # ===== LLM 설정 (환경변수 우선) =====
@@ -156,27 +154,11 @@ DEFAULT_GENERATION_SETTINGS = {
     "seed": -1,  # -1 = 랜덤
 }
 
-# LongCat-Image-Edit 양자화 옵션
-# 참고: stduhpf/LongCat-Image-Edit-gguf 레포에는 Q4_K_M, Q8_0만 존재
+# LongCat-Image-Edit 모델 옵션
 EDIT_QUANTIZATION_OPTIONS = {
-    # 기본 BF16 (양자화 없음, 최고 품질)
     "BF16 (기본, 최고품질)": {
         "type": "bf16",
         "repo": LONGCAT_EDIT_MODEL,
-        "is_gguf": False,
-    },
-    # GGUF 양자화 옵션 (VRAM 절약)
-    "GGUF Q8_0 (고품질)": {
-        "type": "Q8_0",
-        "repo": LONGCAT_EDIT_GGUF_REPO,
-        "filename": "longcat_edit_bfl_format-Q8_0.gguf",
-        "is_gguf": True,
-    },
-    "GGUF Q4_K_M (추천)": {
-        "type": "Q4_K_M",
-        "repo": LONGCAT_EDIT_GGUF_REPO,
-        "filename": "longcat_edit_bfl_format-Q4_K_M.gguf",
-        "is_gguf": True,
     },
 }
 
