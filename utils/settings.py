@@ -17,6 +17,12 @@ from config.defaults import (
 
 # 지원하는 LLM Provider 목록
 LLM_PROVIDERS = {
+    "env": {
+        "name": ".env 파일 설정",
+        "base_url": "",  # 환경변수에서 결정
+        "default_model": "",  # 환경변수에서 결정
+        "models": [],
+    },
     "openai": {
         "name": "OpenAI",
         "base_url": "https://api.openai.com/v1",
@@ -78,7 +84,7 @@ class SettingsManager:
             "openai_api_key": "",
             
             # LLM Provider 설정
-            "llm_provider": "openai",
+            "llm_provider": "env",
             "llm_api_key": "",
             "llm_base_url": "",  # 커스텀 provider용
             "llm_model": "",  # 비어있으면 provider 기본값 사용

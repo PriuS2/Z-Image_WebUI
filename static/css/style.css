@@ -1623,3 +1623,287 @@ body {
     cursor: not-allowed;
     background: var(--bg-tertiary);
 }
+
+/* ============= 이미지 편집 탭 스타일 ============= */
+
+/* 편집 이미지 업로드 영역 */
+.edit-image-area {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.image-upload-box,
+.reference-image-box {
+    flex: 1;
+    min-height: 150px;
+    max-height: 200px;
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+}
+
+.image-upload-box:hover,
+.reference-image-box:hover {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.05);
+}
+
+.image-upload-box.dragover,
+.reference-image-box.dragover {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.1);
+}
+
+.image-upload-box {
+    flex: 2;
+}
+
+.reference-image-box {
+    flex: 1;
+    border-style: dotted;
+    opacity: 0.7;
+}
+
+.reference-image-box:hover {
+    opacity: 1;
+}
+
+.upload-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-muted);
+    text-align: center;
+    padding: 16px;
+}
+
+.upload-placeholder i {
+    font-size: 32px;
+    color: var(--accent);
+}
+
+.upload-placeholder span {
+    font-size: 13px;
+}
+
+.upload-preview {
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+.upload-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: var(--bg-tertiary);
+}
+
+.upload-preview .btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 10;
+}
+
+/* 편집 히스토리 리스트 */
+.edit-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.edit-history-item {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.edit-history-item:hover {
+    border-color: var(--accent);
+    background: var(--bg-tertiary);
+}
+
+.edit-history-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.edit-history-item-time {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.edit-history-images {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.edit-history-image-wrapper {
+    flex: 1;
+    aspect-ratio: 1;
+    max-width: 120px;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--bg-tertiary);
+}
+
+.edit-history-image-wrapper img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.edit-history-arrow {
+    display: flex;
+    align-items: center;
+    color: var(--accent);
+    font-size: 24px;
+}
+
+.edit-history-item-prompt {
+    font-size: 14px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.edit-history-item-prompt .lang-badge {
+    flex-shrink: 0;
+}
+
+.edit-history-chain-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    border-radius: 20px;
+    font-size: 11px;
+    color: var(--warning);
+    margin-top: 8px;
+}
+
+/* 편집 입력 컨테이너 확장 */
+.edit-input-container .input-options {
+    margin-bottom: 8px;
+}
+
+/* 편집 결과 메시지 스타일 */
+.message.edit-result .message-images {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.message.edit-result .edit-comparison {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.message.edit-result .edit-comparison img {
+    max-width: 250px;
+    max-height: 250px;
+    border-radius: var(--radius-sm);
+}
+
+.message.edit-result .edit-arrow {
+    font-size: 24px;
+    color: var(--accent);
+}
+
+/* 편집 제안 드롭다운 */
+.edit-suggestions {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 100;
+    box-shadow: var(--shadow);
+}
+
+.edit-suggestion-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.edit-suggestion-item:last-child {
+    border-bottom: none;
+}
+
+.edit-suggestion-item:hover {
+    background: var(--bg-hover);
+}
+
+.edit-suggestion-item .korean {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.edit-suggestion-item .english {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* 갤러리에서 선택 모달 */
+.gallery-select-modal .gallery-grid {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.gallery-select-modal .gallery-item.selected {
+    border: 3px solid var(--accent);
+}
+
+/* 반응형 - 편집 탭 */
+@media (max-width: 768px) {
+    .edit-image-area {
+        flex-direction: column;
+    }
+    
+    .image-upload-box,
+    .reference-image-box {
+        max-height: 150px;
+    }
+    
+    .edit-history-images {
+        flex-direction: column;
+        align-items: center;
+    }
+    
+    .edit-history-arrow {
+        transform: rotate(90deg);
+    }
+    
+    .edit-history-image-wrapper {
+        max-width: 200px;
+    }
+}

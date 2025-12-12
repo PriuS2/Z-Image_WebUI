@@ -6,6 +6,7 @@ let isGenerating = false;
 let isModelLoading = false;
 let templates = {};
 let isTranslating = false;
+let isLlmProcessing = false;  // LLM 처리 중 여부
 let lastHistoryId = null;
 let isAdmin = false;  // 관리자 여부
 let sessionId = null;  // 현재 세션 ID
@@ -133,7 +134,66 @@ function handleWebSocketMessage(data) {
         case 'pong':
             // 핑 응답 (무시)
             break;
+        
+        // ============= 편집 모델 관련 메시지 =============
+        case 'edit_model_progress':
+            updateEditProgress(data.progress, data.label, data.detail);
+            if (data.stage === 'complete' || data.stage === 'error') {
+                setTimeout(hideEditProgress, 1500);
+                setEditModelLoadingState(false);
+            }
+            break;
+        
+        case 'edit_model_status_change':
+            updateEditModelStatusFromData(data);
+            break;
+        
+        case 'edit_progress':
+            // 편집 진행 상황
+            handleEditProgress(data);
+            break;
+        
+        case 'edit_system':
+            // 편집 탭 시스템 메시지
+            addEditMessage('system', data.content);
+            break;
+        
+        case 'edit_result':
+            // 편집 결과
+            handleEditResult(data);
+            break;
     }
+}
+
+
+// ============= 편집 진행 상황 처리 =============
+function handleEditProgress(data) {
+    const { current_image, total_images, current_step, total_steps, progress } = data;
+    
+    let label;
+    if (total_images > 1) {
+        label = `이미지 ${current_image}/${total_images} - 스텝 ${current_step}/${total_steps}`;
+    } else {
+        label = `스텝 ${current_step}/${total_steps}`;
+    }
+    
+    showEditProgress(label, progress);
+}
+
+
+// ============= 편집 결과 처리 =============
+function handleEditResult(data) {
+    if (data.images && data.images.length > 0) {
+        // 원본 이미지 src 가져오기
+        const originalImg = document.getElementById('editPreviewImage');
+        const originalSrc = originalImg ? originalImg.src : '';
+        
+        addEditImageMessage(originalSrc, data.images, data.prompt);
+    }
+    
+    hideEditProgress();
+    isEditing = false;
+    setEditButtonState(false);
 }
 
 // ============= 큐 상태 처리 =============
@@ -464,6 +524,62 @@ async function apiCall(endpoint, method = 'GET', body = null) {
     }
     
     return response.json();
+}
+
+// ============= LLM 버튼 비활성화/활성화 =============
+const LLM_TIMEOUT = 5000;  // 5초 타임아웃
+
+function setLlmButtonsDisabled(disabled) {
+    const buttons = [
+        document.getElementById('btnTemplate'),
+        document.getElementById('btnTranslate'),
+        document.getElementById('btnEnhance'),
+        document.getElementById('btnTranslateKorean')
+    ];
+    
+    buttons.forEach(btn => {
+        if (btn) {
+            btn.disabled = disabled;
+            btn.style.opacity = disabled ? '0.5' : '1';
+            btn.style.pointerEvents = disabled ? 'none' : 'auto';
+        }
+    });
+    
+    isLlmProcessing = disabled;
+}
+
+async function apiCallWithTimeout(endpoint, method, body, timeout = LLM_TIMEOUT) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    const options = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        signal: controller.signal
+    };
+    
+    if (body) {
+        options.body = JSON.stringify(body);
+    }
+    
+    try {
+        const response = await fetch(`/api${endpoint}`, options);
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || '요청 실패');
+        }
+        
+        return response.json();
+    } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            throw new Error('요청 시간 초과 (5초)');
+        }
+        throw error;
+    }
 }
 
 // ============= 이미지 생성 =============
@@ -825,7 +941,7 @@ async function translateKoreanInput() {
         return false;
     }
     
-    if (isTranslating) {
+    if (isTranslating || isLlmProcessing) {
         return false;
     }
     
@@ -844,12 +960,13 @@ async function translateKoreanInput() {
     
     try {
         isTranslating = true;
+        setLlmButtonsDisabled(true);
         if (statusEl) {
             statusEl.textContent = '번역 중...';
             statusEl.className = 'translate-status translating';
         }
         
-        const result = await apiCall('/translate', 'POST', { text: koreanText });
+        const result = await apiCallWithTimeout('/translate', 'POST', { text: koreanText });
         
         if (result.success) {
             document.getElementById('promptInput').value = result.translated;
@@ -875,6 +992,7 @@ async function translateKoreanInput() {
         return false;
     } finally {
         isTranslating = false;
+        setLlmButtonsDisabled(false);
     }
 }
 
@@ -883,9 +1001,12 @@ async function translatePrompt() {
     const text = koreanInputEl?.value?.trim() || promptInput.value.trim();
     if (!text) return;
     
+    if (isLlmProcessing) return;
+    
     try {
+        setLlmButtonsDisabled(true);
         addMessage('system', '🌐 번역 중...');
-        const result = await apiCall('/translate', 'POST', { text });
+        const result = await apiCallWithTimeout('/translate', 'POST', { text });
         
         if (result.success) {
             promptInput.value = result.translated;
@@ -893,6 +1014,8 @@ async function translatePrompt() {
         }
     } catch (error) {
         addMessage('system', `❌ 번역 실패: ${error.message}`, 'error');
+    } finally {
+        setLlmButtonsDisabled(false);
     }
 }
 
@@ -900,12 +1023,15 @@ async function enhancePrompt() {
     const prompt = promptInput.value.trim();
     if (!prompt) return;
     
+    if (isLlmProcessing) return;
+    
     const koreanInputEl = document.getElementById('koreanInput');
     const statusEl = document.getElementById('translateStatus');
     
     try {
+        setLlmButtonsDisabled(true);
         addMessage('system', '✨ 프롬프트 향상 중...');
-        const result = await apiCall('/enhance', 'POST', { prompt, style: '기본' });
+        const result = await apiCallWithTimeout('/enhance', 'POST', { prompt, style: '기본' });
         
         if (result.success) {
             promptInput.value = result.enhanced;
@@ -918,7 +1044,7 @@ async function enhancePrompt() {
                         statusEl.className = 'translate-status translating';
                     }
                     
-                    const reverseResult = await apiCall('/translate-reverse', 'POST', { text: result.enhanced });
+                    const reverseResult = await apiCallWithTimeout('/translate-reverse', 'POST', { text: result.enhanced });
                     
                     if (reverseResult.success) {
                         koreanInputEl.value = reverseResult.translated;
@@ -946,6 +1072,8 @@ async function enhancePrompt() {
         }
     } catch (error) {
         addMessage('system', `❌ 향상 실패: ${error.message}`, 'error');
+    } finally {
+        setLlmButtonsDisabled(false);
     }
 }
 
@@ -1298,6 +1426,10 @@ async function deleteFavorite(id) {
 let llmProviders = {};
 let defaultTranslatePrompt = '';
 let defaultEnhancePrompt = '';
+// 편집 시스템 프롬프트 기본값
+let defaultEditTranslatePrompt = '';
+let defaultEditEnhancePrompt = '';
+let defaultEditSuggestPrompt = '';
 
 async function loadLlmProviders() {
     try {
@@ -1345,6 +1477,25 @@ async function loadLlmProviders() {
             enhancePromptInput.value = result.enhance_system_prompt || defaultEnhancePrompt;
         }
         
+        // 편집 시스템 프롬프트 기본값 및 현재값 로드
+        defaultEditTranslatePrompt = result.default_edit_translate_system_prompt || '';
+        defaultEditEnhancePrompt = result.default_edit_enhance_system_prompt || '';
+        defaultEditSuggestPrompt = result.default_edit_suggest_system_prompt || '';
+        
+        const editTranslatePromptInput = document.getElementById('editTranslateSystemPrompt');
+        const editEnhancePromptInput = document.getElementById('editEnhanceSystemPrompt');
+        const editSuggestPromptInput = document.getElementById('editSuggestSystemPrompt');
+        
+        if (editTranslatePromptInput) {
+            editTranslatePromptInput.value = result.edit_translate_system_prompt || defaultEditTranslatePrompt;
+        }
+        if (editEnhancePromptInput) {
+            editEnhancePromptInput.value = result.edit_enhance_system_prompt || defaultEditEnhancePrompt;
+        }
+        if (editSuggestPromptInput) {
+            editSuggestPromptInput.value = result.edit_suggest_system_prompt || defaultEditSuggestPrompt;
+        }
+        
         // 관리자 상태 업데이트
         if (result.is_admin !== undefined) {
             isAdmin = result.is_admin;
@@ -1360,6 +1511,10 @@ async function loadLlmProviders() {
 function updateLlmModelList(providerId, currentModel = '') {
     const modelSelect = document.getElementById('llmModelSelect');
     const customInput = document.getElementById('llmModelCustomInput');
+    
+    // 'env' provider는 별도 처리 (updateLlmBaseUrlVisibility에서 처리)
+    if (providerId === 'env') return;
+    
     if (!modelSelect || !llmProviders[providerId]) return;
     
     const provider = llmProviders[providerId];
@@ -1405,6 +1560,13 @@ function updateLlmModelList(providerId, currentModel = '') {
 
 function updateChatLlmModelList(providerId, currentModel = '') {
     const modelSelect = document.getElementById('chatLlmModelSelect');
+    
+    // 'env' provider는 모델 목록 비움
+    if (providerId === 'env') {
+        if (modelSelect) modelSelect.innerHTML = '<option value="">.env 설정</option>';
+        return;
+    }
+    
     if (!modelSelect || !llmProviders[providerId]) return;
     
     const provider = llmProviders[providerId];
@@ -1450,6 +1612,25 @@ async function saveChatLlmSettings() {
 
 function updateLlmBaseUrlVisibility(providerId) {
     const baseUrlGroup = document.getElementById('llmBaseUrlGroup');
+    const apiKeyInput = document.getElementById('llmApiKeyInput');
+    const modelSelectWrapper = document.querySelector('.model-input-wrapper');
+    const infoEl = document.getElementById('llmProviderInfo');
+    
+    // 'env' provider: 모든 설정 필드 숨기기
+    if (providerId === 'env') {
+        if (baseUrlGroup) baseUrlGroup.style.display = 'none';
+        if (apiKeyInput) apiKeyInput.parentElement.style.display = 'none';
+        if (modelSelectWrapper) modelSelectWrapper.parentElement.style.display = 'none';
+        if (infoEl) {
+            infoEl.innerHTML = '<small>📁 <strong>.env 파일</strong>의 설정을 사용합니다. (LLM_PROVIDER, LLM_API_KEY, LLM_MODEL 등)</small>';
+        }
+        return;
+    }
+    
+    // 다른 provider: 필드 표시
+    if (apiKeyInput) apiKeyInput.parentElement.style.display = 'block';
+    if (modelSelectWrapper) modelSelectWrapper.parentElement.style.display = 'block';
+    
     if (baseUrlGroup) {
         baseUrlGroup.style.display = 
             (providerId === 'custom' || providerId === 'ollama' || providerId === 'lmstudio') 
@@ -1603,6 +1784,79 @@ async function resetEnhancePrompt() {
     }
 }
 
+// ============= 편집 시스템 프롬프트 설정 (개인화) =============
+async function saveEditSystemPrompts() {
+    // 편집 시스템 프롬프트는 세션별 개인화 - 모든 사용자 저장 가능
+    const editTranslatePrompt = document.getElementById('editTranslateSystemPrompt')?.value || '';
+    const editEnhancePrompt = document.getElementById('editEnhanceSystemPrompt')?.value || '';
+    const editSuggestPrompt = document.getElementById('editSuggestSystemPrompt')?.value || '';
+    
+    try {
+        await apiCall('/settings/prompts', 'POST', {
+            edit_translate_system_prompt: editTranslatePrompt,
+            edit_enhance_system_prompt: editEnhancePrompt,
+            edit_suggest_system_prompt: editSuggestPrompt
+        });
+        addMessage('system', '✅ 편집 시스템 프롬프트 저장됨 (내 설정)');
+    } catch (error) {
+        addMessage('system', `❌ 저장 실패: ${error.message}`, 'error');
+    }
+}
+
+async function resetEditTranslatePrompt() {
+    const editTranslatePromptInput = document.getElementById('editTranslateSystemPrompt');
+    if (editTranslatePromptInput && defaultEditTranslatePrompt) {
+        editTranslatePromptInput.value = defaultEditTranslatePrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                edit_translate_system_prompt: ''
+            });
+        } catch (error) {
+            console.error('편집 번역 프롬프트 초기화 실패:', error);
+        }
+        
+        addMessage('system', '✅ 편집 지시어 번역 프롬프트가 기본값으로 초기화되었습니다.');
+    }
+}
+
+async function resetEditEnhancePrompt() {
+    const editEnhancePromptInput = document.getElementById('editEnhanceSystemPrompt');
+    if (editEnhancePromptInput && defaultEditEnhancePrompt) {
+        editEnhancePromptInput.value = defaultEditEnhancePrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                edit_enhance_system_prompt: ''
+            });
+        } catch (error) {
+            console.error('편집 향상 프롬프트 초기화 실패:', error);
+        }
+        
+        addMessage('system', '✅ 편집 지시어 향상 프롬프트가 기본값으로 초기화되었습니다.');
+    }
+}
+
+async function resetEditSuggestPrompt() {
+    const editSuggestPromptInput = document.getElementById('editSuggestSystemPrompt');
+    if (editSuggestPromptInput && defaultEditSuggestPrompt) {
+        editSuggestPromptInput.value = defaultEditSuggestPrompt;
+        
+        // 세션 설정에서 삭제하여 기본값 사용
+        try {
+            await apiCall('/settings/prompts', 'POST', {
+                edit_suggest_system_prompt: ''
+            });
+        } catch (error) {
+            console.error('편집 제안 프롬프트 초기화 실패:', error);
+        }
+        
+        addMessage('system', '✅ 편집 제안 프롬프트가 기본값으로 초기화되었습니다.');
+    }
+}
+
 // ============= UI 헬퍼 =============
 function switchTab(tabId) {
     document.querySelectorAll('.nav-item').forEach(btn => {
@@ -1617,6 +1871,8 @@ function switchTab(tabId) {
     if (tabId === 'history') loadHistory();
     if (tabId === 'favorites') loadFavorites();
     if (tabId === 'settings' && isAdmin) loadSessionList();
+    if (tabId === 'edit-history') loadEditHistory();
+    if (tabId === 'edit') loadEditQuantizationOptions();
 }
 
 function showImageModal(path, metadata) {
@@ -1804,10 +2060,52 @@ document.addEventListener('DOMContentLoaded', () => {
         btnResetEnhancePrompt.addEventListener('click', resetEnhancePrompt);
     }
     
+    // 편집 시스템 프롬프트 설정 (개인화)
+    const btnSaveEditSystemPrompts = document.getElementById('btnSaveEditSystemPrompts');
+    if (btnSaveEditSystemPrompts) {
+        btnSaveEditSystemPrompts.addEventListener('click', saveEditSystemPrompts);
+    }
+    
+    const btnResetEditTranslatePrompt = document.getElementById('btnResetEditTranslatePrompt');
+    if (btnResetEditTranslatePrompt) {
+        btnResetEditTranslatePrompt.addEventListener('click', resetEditTranslatePrompt);
+    }
+    
+    const btnResetEditEnhancePrompt = document.getElementById('btnResetEditEnhancePrompt');
+    if (btnResetEditEnhancePrompt) {
+        btnResetEditEnhancePrompt.addEventListener('click', resetEditEnhancePrompt);
+    }
+    
+    const btnResetEditSuggestPrompt = document.getElementById('btnResetEditSuggestPrompt');
+    if (btnResetEditSuggestPrompt) {
+        btnResetEditSuggestPrompt.addEventListener('click', resetEditSuggestPrompt);
+    }
+    
     // 자동 언로드 설정
     const btnSaveAutoUnload = document.getElementById('btnSaveAutoUnload');
     if (btnSaveAutoUnload) {
         btnSaveAutoUnload.addEventListener('click', saveAutoUnloadSettings);
+    }
+    
+    // 설정 탭 편집 모델 로드/언로드
+    const btnLoadEditModelSettings = document.getElementById('btnLoadEditModelSettings');
+    const btnUnloadEditModelSettings = document.getElementById('btnUnloadEditModelSettings');
+    if (btnLoadEditModelSettings) {
+        btnLoadEditModelSettings.addEventListener('click', async () => {
+            const quant = document.getElementById('editQuantizationSelectSettings')?.value || "BF16 (기본, 최고품질)";
+            const cpuOffload = document.getElementById('editCpuOffloadCheckSettings')?.checked ?? true;
+            
+            // 편집 탭의 설정과 동기화
+            const editQuantSelect = document.getElementById('editQuantizationSelect');
+            const editCpuCheck = document.getElementById('editCpuOffloadCheck');
+            if (editQuantSelect) editQuantSelect.value = quant;
+            if (editCpuCheck) editCpuCheck.checked = cpuOffload;
+            
+            await loadEditModel();
+        });
+    }
+    if (btnUnloadEditModelSettings) {
+        btnUnloadEditModelSettings.addEventListener('click', unloadEditModel);
     }
     
     // 레거시 호환
@@ -1862,4 +2160,858 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     document.querySelector('.input-options').appendChild(favBtn);
+    
+    // ============= 편집 탭 이벤트 =============
+    initEditTab();
 });
+
+
+// ============= 편집 탭 관련 변수 =============
+let isEditModelLoading = false;
+let isEditing = false;
+let editImageFile = null;
+let referenceImageFile = null;
+
+
+// ============= 편집 탭 초기화 =============
+function initEditTab() {
+    // 이미지 업로드 영역
+    const editImageUpload = document.getElementById('editImageUpload');
+    const editImageInput = document.getElementById('editImageInput');
+    const referenceImageBox = document.getElementById('referenceImageBox');
+    const referenceImageInput = document.getElementById('referenceImageInput');
+    
+    // 메인 이미지 업로드
+    if (editImageUpload) {
+        editImageUpload.addEventListener('click', (e) => {
+            if (!e.target.closest('.btn') && !e.target.closest('.upload-preview')) {
+                editImageInput.click();
+            }
+        });
+        
+        editImageUpload.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            editImageUpload.classList.add('dragover');
+        });
+        
+        editImageUpload.addEventListener('dragleave', () => {
+            editImageUpload.classList.remove('dragover');
+        });
+        
+        editImageUpload.addEventListener('drop', (e) => {
+            e.preventDefault();
+            editImageUpload.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                handleEditImageUpload(e.dataTransfer.files[0]);
+            }
+        });
+    }
+    
+    if (editImageInput) {
+        editImageInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleEditImageUpload(e.target.files[0]);
+            }
+        });
+    }
+    
+    // 참조 이미지 업로드
+    if (referenceImageBox) {
+        referenceImageBox.addEventListener('click', (e) => {
+            if (!e.target.closest('.btn') && !e.target.closest('.upload-preview')) {
+                referenceImageInput.click();
+            }
+        });
+        
+        referenceImageBox.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            referenceImageBox.classList.add('dragover');
+        });
+        
+        referenceImageBox.addEventListener('dragleave', () => {
+            referenceImageBox.classList.remove('dragover');
+        });
+        
+        referenceImageBox.addEventListener('drop', (e) => {
+            e.preventDefault();
+            referenceImageBox.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                handleReferenceImageUpload(e.dataTransfer.files[0]);
+            }
+        });
+    }
+    
+    if (referenceImageInput) {
+        referenceImageInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleReferenceImageUpload(e.target.files[0]);
+            }
+        });
+    }
+    
+    // 이미지 제거 버튼
+    const btnRemoveEditImage = document.getElementById('btnRemoveEditImage');
+    if (btnRemoveEditImage) {
+        btnRemoveEditImage.addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeEditImage();
+        });
+    }
+    
+    const btnRemoveRefImage = document.getElementById('btnRemoveRefImage');
+    if (btnRemoveRefImage) {
+        btnRemoveRefImage.addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeReferenceImage();
+        });
+    }
+    
+    // 모델 로드/언로드
+    const btnEditLoadModel = document.getElementById('btnEditLoadModel');
+    const btnEditUnloadModel = document.getElementById('btnEditUnloadModel');
+    
+    if (btnEditLoadModel) {
+        btnEditLoadModel.addEventListener('click', loadEditModel);
+    }
+    if (btnEditUnloadModel) {
+        btnEditUnloadModel.addEventListener('click', unloadEditModel);
+    }
+    
+    // 편집 버튼
+    const btnEdit = document.getElementById('btnEdit');
+    if (btnEdit) {
+        btnEdit.addEventListener('click', executeEdit);
+    }
+    
+    // 번역/향상 버튼
+    const btnEditTranslate = document.getElementById('btnEditTranslate');
+    const btnEditEnhance = document.getElementById('btnEditEnhance');
+    const btnEditSuggest = document.getElementById('btnEditSuggest');
+    const btnEditTranslateKorean = document.getElementById('btnEditTranslateKorean');
+    
+    if (btnEditTranslate) {
+        btnEditTranslate.addEventListener('click', translateEditPrompt);
+    }
+    if (btnEditEnhance) {
+        btnEditEnhance.addEventListener('click', enhanceEditPrompt);
+    }
+    if (btnEditSuggest) {
+        btnEditSuggest.addEventListener('click', suggestEdits);
+    }
+    if (btnEditTranslateKorean) {
+        btnEditTranslateKorean.addEventListener('click', translateEditKoreanInput);
+    }
+    
+    // 편집 히스토리 삭제 버튼
+    const btnClearEditHistory = document.getElementById('btnClearEditHistory');
+    if (btnClearEditHistory) {
+        btnClearEditHistory.addEventListener('click', clearEditHistory);
+    }
+    
+    // 한국어 입력 엔터키
+    const editKoreanInput = document.getElementById('editKoreanInput');
+    if (editKoreanInput) {
+        editKoreanInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                executeEdit();
+            }
+        });
+    }
+    
+    // 영어 입력 엔터키
+    const editPromptInput = document.getElementById('editPromptInput');
+    if (editPromptInput) {
+        editPromptInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                executeEdit();
+            }
+        });
+    }
+    
+    // 양자화 옵션 로드
+    loadEditQuantizationOptions();
+}
+
+
+// ============= 이미지 업로드 처리 =============
+function handleEditImageUpload(file) {
+    if (!file.type.startsWith('image/')) {
+        addEditMessage('system', '❌ 이미지 파일만 업로드할 수 있습니다.');
+        return;
+    }
+    
+    editImageFile = file;
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const preview = document.getElementById('editUploadPreview');
+        const placeholder = document.getElementById('editUploadPlaceholder');
+        const img = document.getElementById('editPreviewImage');
+        
+        img.src = e.target.result;
+        preview.style.display = 'block';
+        placeholder.style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+}
+
+function handleReferenceImageUpload(file) {
+    if (!file.type.startsWith('image/')) {
+        addEditMessage('system', '❌ 이미지 파일만 업로드할 수 있습니다.');
+        return;
+    }
+    
+    referenceImageFile = file;
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const preview = document.getElementById('referencePreview');
+        const placeholder = document.getElementById('referencePlaceholder');
+        const img = document.getElementById('referencePreviewImage');
+        
+        img.src = e.target.result;
+        preview.style.display = 'block';
+        placeholder.style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+}
+
+function removeEditImage() {
+    editImageFile = null;
+    
+    const preview = document.getElementById('editUploadPreview');
+    const placeholder = document.getElementById('editUploadPlaceholder');
+    const input = document.getElementById('editImageInput');
+    
+    preview.style.display = 'none';
+    placeholder.style.display = 'flex';
+    input.value = '';
+}
+
+function removeReferenceImage() {
+    referenceImageFile = null;
+    
+    const preview = document.getElementById('referencePreview');
+    const placeholder = document.getElementById('referencePlaceholder');
+    const input = document.getElementById('referenceImageInput');
+    
+    preview.style.display = 'none';
+    placeholder.style.display = 'flex';
+    input.value = '';
+}
+
+
+// ============= 편집 모델 관리 =============
+async function loadEditModel() {
+    if (isEditModelLoading) {
+        addEditMessage('system', '⚠️ 이미 모델 로딩 중입니다.');
+        return;
+    }
+    
+    const quantization = document.getElementById('editQuantizationSelect')?.value || "BF16 (기본, 최고품질)";
+    const cpuOffload = document.getElementById('editCpuOffloadCheck')?.checked ?? true;
+    
+    try {
+        setEditModelLoadingState(true);
+        addEditMessage('system', '🔄 편집 모델 로딩을 시작합니다...');
+        showEditProgress('모델 로딩 준비 중...', 5);
+        
+        await apiCall('/edit/model/load', 'POST', {
+            quantization,
+            cpu_offload: cpuOffload
+        });
+        
+        updateEditModelStatus();
+        
+    } catch (error) {
+        addEditMessage('system', `❌ 모델 로드 실패: ${error.message}`, 'error');
+        hideEditProgress();
+    } finally {
+        setEditModelLoadingState(false);
+    }
+}
+
+async function unloadEditModel() {
+    if (isEditModelLoading) {
+        addEditMessage('system', '⚠️ 모델 로딩 중에는 언로드할 수 없습니다.');
+        return;
+    }
+    
+    try {
+        setEditModelLoadingState(true);
+        showEditProgress('모델 언로드 중...', 50);
+        addEditMessage('system', '🔄 편집 모델 언로드 중...');
+        
+        await apiCall('/edit/model/unload', 'POST');
+        updateEditModelStatus();
+        
+    } catch (error) {
+        addEditMessage('system', `❌ 모델 언로드 실패: ${error.message}`, 'error');
+        hideEditProgress();
+    } finally {
+        setEditModelLoadingState(false);
+    }
+}
+
+function setEditModelLoadingState(loading) {
+    isEditModelLoading = loading;
+    
+    const btnLoad = document.getElementById('btnEditLoadModel');
+    const btnUnload = document.getElementById('btnEditUnloadModel');
+    
+    if (btnLoad) {
+        btnLoad.disabled = loading;
+        btnLoad.innerHTML = loading ? '<i class="ri-loader-4-line"></i> 로딩...' : '<i class="ri-download-line"></i> 로드';
+    }
+    if (btnUnload) {
+        btnUnload.disabled = loading;
+    }
+    
+    const statusBadge = document.getElementById('editModelStatusBadge');
+    if (statusBadge && loading) {
+        const dot = statusBadge.querySelector('.status-dot');
+        const text = statusBadge.querySelector('.status-text');
+        if (dot) dot.classList.add('loading');
+        if (text) text.textContent = '로딩 중...';
+    }
+}
+
+async function updateEditModelStatus() {
+    try {
+        const status = await apiCall('/edit/status');
+        updateEditModelStatusFromData(status);
+    } catch (error) {
+        console.error('편집 모델 상태 업데이트 실패:', error);
+    }
+}
+
+function updateEditModelStatusFromData(data) {
+    const statusBadge = document.getElementById('editModelStatusBadge');
+    if (!statusBadge) return;
+    
+    const dot = statusBadge.querySelector('.status-dot');
+    const text = statusBadge.querySelector('.status-text');
+    
+    if (data.model_loaded) {
+        if (dot) {
+            dot.classList.remove('offline', 'loading');
+            dot.classList.add('online');
+        }
+        if (text) {
+            text.textContent = data.current_model ? `✓ ${data.current_model.split(' ')[0]}` : '편집 모델 로드됨';
+        }
+    } else {
+        if (dot) {
+            dot.classList.remove('online', 'loading');
+            dot.classList.add('offline');
+        }
+        if (text) {
+            text.textContent = '편집 모델 미로드';
+        }
+    }
+}
+
+
+// ============= 편집 실행 =============
+async function executeEdit() {
+    if (isEditing) {
+        addEditMessage('system', '⚠️ 이미 편집 중입니다.');
+        return;
+    }
+    
+    if (!editImageFile) {
+        addEditMessage('system', '❌ 편집할 이미지를 업로드해주세요.');
+        return;
+    }
+    
+    const koreanText = document.getElementById('editKoreanInput')?.value?.trim() || '';
+    let prompt = document.getElementById('editPromptInput')?.value?.trim() || '';
+    
+    // 한국어가 있고 영어가 없으면 번역
+    if (koreanText && !prompt) {
+        addEditMessage('system', '🌐 번역 후 편집합니다...');
+        const translated = await translateEditKoreanInput();
+        if (!translated) {
+            addEditMessage('system', '❌ 번역 실패로 편집을 중단합니다.');
+            return;
+        }
+        prompt = document.getElementById('editPromptInput')?.value?.trim() || '';
+    }
+    
+    if (!prompt) {
+        addEditMessage('system', '❌ 편집 프롬프트를 입력해주세요.');
+        return;
+    }
+    
+    isEditing = true;
+    setEditButtonState(true);
+    
+    // 사용자 메시지 표시
+    const displayPrompt = koreanText ? `🇰🇷 ${koreanText}\n🇺🇸 ${prompt}` : prompt;
+    addEditMessage('user', displayPrompt);
+    
+    // 진행률 표시 시작
+    showEditProgress('편집 준비 중...', 0);
+    
+    const formData = new FormData();
+    formData.append('image', editImageFile);
+    formData.append('prompt', prompt);
+    formData.append('korean_prompt', koreanText);
+    formData.append('steps', document.getElementById('editStepsInput')?.value || '50');
+    formData.append('guidance_scale', document.getElementById('editGuidanceInput')?.value || '4.5');
+    formData.append('seed', document.getElementById('editSeedInput')?.value || '-1');
+    formData.append('num_images', document.getElementById('editNumImagesInput')?.value || '1');
+    formData.append('auto_translate', 'false');  // 이미 번역했으므로
+    
+    if (referenceImageFile) {
+        formData.append('reference_image', referenceImageFile);
+    }
+    
+    try {
+        const response = await fetch('/api/edit/generate', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include'
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            // detail이 객체인 경우 (ValidationError 등) 처리
+            let errorMessage = '편집 실패';
+            if (error.detail) {
+                if (typeof error.detail === 'string') {
+                    errorMessage = error.detail;
+                } else if (Array.isArray(error.detail)) {
+                    // FastAPI ValidationError 형식
+                    errorMessage = error.detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
+                } else if (typeof error.detail === 'object') {
+                    errorMessage = JSON.stringify(error.detail);
+                }
+            }
+            throw new Error(errorMessage);
+        }
+        
+        // 결과는 WebSocket으로 받음
+        
+    } catch (error) {
+        addEditMessage('system', `❌ 오류: ${error.message}`, 'error');
+        hideEditProgress();
+        isEditing = false;
+        setEditButtonState(false);
+    }
+}
+
+function setEditButtonState(editing) {
+    const btnEdit = document.getElementById('btnEdit');
+    if (btnEdit) {
+        btnEdit.disabled = editing;
+        btnEdit.innerHTML = editing ? '<i class="ri-loader-4-line"></i> 편집 중...' : '<i class="ri-edit-line"></i> 편집';
+    }
+}
+
+
+// ============= 편집 LLM 기능 =============
+let isEditLlmProcessing = false;  // 편집 탭 LLM 처리 중 여부
+const EDIT_LLM_TIMEOUT = 5000;    // 번역, 향상 타임아웃 (5초)
+const EDIT_SUGGEST_TIMEOUT = 10000;  // 편집제안 타임아웃 (10초)
+
+function setEditLlmButtonsDisabled(disabled) {
+    const buttons = [
+        document.getElementById('btnEditTranslate'),
+        document.getElementById('btnEditEnhance'),
+        document.getElementById('btnEditSuggest'),
+        document.getElementById('btnEditTranslateKorean')
+    ];
+    
+    buttons.forEach(btn => {
+        if (btn) {
+            btn.disabled = disabled;
+            btn.style.opacity = disabled ? '0.5' : '1';
+            btn.style.pointerEvents = disabled ? 'none' : 'auto';
+        }
+    });
+    
+    isEditLlmProcessing = disabled;
+}
+
+async function editApiCallWithTimeout(endpoint, method, body, timeout) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    const options = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        signal: controller.signal
+    };
+    
+    if (body) {
+        options.body = JSON.stringify(body);
+    }
+    
+    try {
+        const response = await fetch(`/api${endpoint}`, options);
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || '요청 실패');
+        }
+        
+        return response.json();
+    } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            throw new Error(`요청 시간 초과 (${timeout / 1000}초)`);
+        }
+        throw error;
+    }
+}
+
+async function translateEditKoreanInput() {
+    const koreanInput = document.getElementById('editKoreanInput');
+    const koreanText = koreanInput?.value?.trim();
+    const statusEl = document.getElementById('editTranslateStatus');
+    
+    if (!koreanText) {
+        addEditMessage('system', '⚠️ 한국어 입력창에 텍스트를 입력해주세요.');
+        return false;
+    }
+    
+    if (isEditLlmProcessing) {
+        return false;
+    }
+    
+    try {
+        setEditLlmButtonsDisabled(true);
+        if (statusEl) {
+            statusEl.textContent = '번역 중...';
+            statusEl.className = 'translate-status translating';
+        }
+        
+        const result = await editApiCallWithTimeout('/edit/translate', 'POST', { text: koreanText }, EDIT_LLM_TIMEOUT);
+        
+        if (result.success) {
+            document.getElementById('editPromptInput').value = result.translated;
+            if (statusEl) {
+                statusEl.textContent = '✓ 번역됨';
+                statusEl.className = 'translate-status success';
+                setTimeout(() => {
+                    statusEl.textContent = '';
+                    statusEl.className = 'translate-status';
+                }, 2000);
+            }
+            return true;
+        }
+        return false;
+    } catch (error) {
+        if (statusEl) {
+            statusEl.textContent = '번역 실패';
+            statusEl.className = 'translate-status error';
+        }
+        addEditMessage('system', `❌ 번역 실패: ${error.message}`, 'error');
+        return false;
+    } finally {
+        setEditLlmButtonsDisabled(false);
+    }
+}
+
+async function translateEditPrompt() {
+    const koreanInput = document.getElementById('editKoreanInput');
+    const text = koreanInput?.value?.trim() || document.getElementById('editPromptInput')?.value?.trim();
+    if (!text) return;
+    
+    if (isEditLlmProcessing) return;
+    
+    try {
+        setEditLlmButtonsDisabled(true);
+        addEditMessage('system', '🌐 번역 중...');
+        const result = await editApiCallWithTimeout('/edit/translate', 'POST', { text }, EDIT_LLM_TIMEOUT);
+        
+        if (result.success) {
+            document.getElementById('editPromptInput').value = result.translated;
+            addEditMessage('system', '✅ 번역 완료');
+        }
+    } catch (error) {
+        addEditMessage('system', `❌ 번역 실패: ${error.message}`, 'error');
+    } finally {
+        setEditLlmButtonsDisabled(false);
+    }
+}
+
+async function enhanceEditPrompt() {
+    const prompt = document.getElementById('editPromptInput')?.value?.trim();
+    if (!prompt) {
+        addEditMessage('system', '⚠️ 영어 프롬프트를 먼저 입력해주세요.');
+        return;
+    }
+    
+    if (isEditLlmProcessing) return;
+    
+    try {
+        setEditLlmButtonsDisabled(true);
+        addEditMessage('system', '✨ 편집 지시어 향상 중...');
+        const result = await editApiCallWithTimeout('/edit/enhance', 'POST', { instruction: prompt }, EDIT_LLM_TIMEOUT);
+        
+        if (result.success) {
+            document.getElementById('editPromptInput').value = result.enhanced;
+            addEditMessage('system', '✅ 편집 지시어 향상 완료');
+        }
+    } catch (error) {
+        addEditMessage('system', `❌ 향상 실패: ${error.message}`, 'error');
+    } finally {
+        setEditLlmButtonsDisabled(false);
+    }
+}
+
+async function suggestEdits() {
+    if (isEditLlmProcessing) return;
+    
+    try {
+        setEditLlmButtonsDisabled(true);
+        addEditMessage('system', '💡 편집 아이디어 생성 중...');
+        const result = await editApiCallWithTimeout('/edit/suggest', 'POST', { context: '', image_description: '' }, EDIT_SUGGEST_TIMEOUT);
+        
+        if (result.success && result.suggestions_korean.length > 0) {
+            let html = '<p>💡 <strong>편집 아이디어:</strong></p><ul>';
+            result.suggestions_korean.forEach((suggestion, i) => {
+                html += `<li style="cursor:pointer;" onclick="applyEditSuggestion('${escapeHtml(result.suggestions[i])}', '${escapeHtml(suggestion)}')">${suggestion}</li>`;
+            });
+            html += '</ul>';
+            addEditMessage('system', html);
+        }
+    } catch (error) {
+        addEditMessage('system', `❌ 제안 생성 실패: ${error.message}`, 'error');
+    } finally {
+        setEditLlmButtonsDisabled(false);
+    }
+}
+
+function applyEditSuggestion(english, korean) {
+    document.getElementById('editKoreanInput').value = korean;
+    document.getElementById('editPromptInput').value = english;
+    addEditMessage('system', '✅ 편집 제안이 적용되었습니다.');
+}
+
+
+// ============= 편집 메시지 표시 =============
+function addEditMessage(type, content, style = '') {
+    const messagesEl = document.getElementById('editMessages');
+    if (!messagesEl) return;
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${type} ${style}`;
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = `<p>${content}</p>`;
+    
+    messageDiv.appendChild(contentDiv);
+    messagesEl.appendChild(messageDiv);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function addEditImageMessage(originalSrc, resultImages, prompt) {
+    const messagesEl = document.getElementById('editMessages');
+    if (!messagesEl) return;
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message assistant edit-result';
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    
+    // 원본 → 결과 비교
+    let html = '<div class="edit-comparison">';
+    html += `<img src="${originalSrc}" alt="원본" title="원본 이미지">`;
+    html += '<span class="edit-arrow"><i class="ri-arrow-right-line"></i></span>';
+    
+    resultImages.forEach(img => {
+        html += `<img src="${img.base64 ? 'data:image/png;base64,' + img.base64 : img.path}" alt="결과" title="시드: ${img.seed}" onclick="showImageModal('${img.path}', {prompt: '${escapeHtml(prompt)}', seed: ${img.seed}})">`;
+    });
+    
+    html += '</div>';
+    contentDiv.innerHTML = html;
+    
+    messageDiv.appendChild(contentDiv);
+    messagesEl.appendChild(messageDiv);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+
+// ============= 편집 프로그레스 =============
+function showEditProgress(label, percent) {
+    const container = document.getElementById('editProgressContainer');
+    const labelEl = document.getElementById('editProgressLabel');
+    const percentEl = document.getElementById('editProgressPercent');
+    const fillEl = document.getElementById('editProgressFill');
+    
+    if (container) container.style.display = 'block';
+    if (labelEl) labelEl.textContent = label;
+    if (percentEl) percentEl.textContent = `${Math.round(percent)}%`;
+    if (fillEl) fillEl.style.width = `${percent}%`;
+}
+
+function updateEditProgress(percent, label, detail) {
+    const labelEl = document.getElementById('editProgressLabel');
+    const percentEl = document.getElementById('editProgressPercent');
+    const fillEl = document.getElementById('editProgressFill');
+    const detailEl = document.getElementById('editProgressDetail');
+    
+    if (label && labelEl) labelEl.textContent = label;
+    if (percentEl) percentEl.textContent = `${Math.round(percent)}%`;
+    if (fillEl) fillEl.style.width = `${percent}%`;
+    if (detail && detailEl) detailEl.textContent = detail;
+}
+
+function hideEditProgress() {
+    const container = document.getElementById('editProgressContainer');
+    const detailEl = document.getElementById('editProgressDetail');
+    
+    if (container) container.style.display = 'none';
+    if (detailEl) detailEl.textContent = '';
+}
+
+
+// ============= 편집 양자화 옵션 로드 =============
+async function loadEditQuantizationOptions() {
+    try {
+        const result = await apiCall('/edit/status');
+        const editTabSelect = document.getElementById('editQuantizationSelect');
+        const settingsSelect = document.getElementById('editQuantizationSelectSettings');
+        
+        [editTabSelect, settingsSelect].forEach(select => {
+            if (result.quantization_options && select) {
+                select.innerHTML = '';
+                result.quantization_options.forEach(option => {
+                    const opt = document.createElement('option');
+                    opt.value = option;
+                    opt.textContent = option;
+                    select.appendChild(opt);
+                });
+            }
+        });
+        
+        updateEditModelStatusFromData(result);
+    } catch (error) {
+        console.error('편집 양자화 옵션 로드 실패:', error);
+    }
+}
+
+
+// ============= 편집 히스토리 =============
+async function loadEditHistory() {
+    try {
+        const result = await apiCall('/edit/history');
+        const list = document.getElementById('editHistoryList');
+        if (!list) return;
+        
+        list.innerHTML = '';
+        
+        result.history.forEach(entry => {
+            const item = document.createElement('div');
+            item.className = 'edit-history-item';
+            
+            let imagesHtml = '<div class="edit-history-images">';
+            if (entry.original_image_path) {
+                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${entry.original_image_path}" alt="원본"></div>`;
+            }
+            imagesHtml += '<span class="edit-history-arrow"><i class="ri-arrow-right-line"></i></span>';
+            if (entry.result_image_paths && entry.result_image_paths.length > 0) {
+                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${entry.result_image_paths[0]}" alt="결과"></div>`;
+            }
+            imagesHtml += '</div>';
+            
+            const hasKorean = entry.korean_prompt && entry.korean_prompt.trim();
+            const chainBadge = entry.parent_id ? '<div class="edit-history-chain-badge"><i class="ri-links-line"></i> 연속 편집</div>' : '';
+            
+            item.innerHTML = `
+                <div class="edit-history-item-header">
+                    <span class="edit-history-item-time">${formatDate(entry.timestamp)}</span>
+                    <div class="item-actions">
+                        <button class="btn btn-secondary" onclick="useEditHistory('${entry.id}')">사용</button>
+                        <button class="btn btn-primary" onclick="continueEditHistory('${entry.id}')" title="이 결과 이미지로 추가 편집">
+                            <i class="ri-add-line"></i> 이어서 편집
+                        </button>
+                    </div>
+                </div>
+                ${imagesHtml}
+                ${hasKorean ? `<div class="edit-history-item-prompt"><span class="lang-badge kr">🇰🇷</span> ${escapeHtml(entry.korean_prompt)}</div>` : ''}
+                <div class="edit-history-item-prompt"><span class="lang-badge us">🇺🇸</span> ${escapeHtml(entry.prompt)}</div>
+                ${chainBadge}
+            `;
+            
+            list.appendChild(item);
+        });
+    } catch (error) {
+        console.error('편집 히스토리 로드 실패:', error);
+    }
+}
+
+async function useEditHistory(historyId) {
+    try {
+        const result = await apiCall(`/edit/history/${historyId}`);
+        const entry = result.history;
+        
+        document.getElementById('editPromptInput').value = entry.prompt;
+        
+        const koreanInput = document.getElementById('editKoreanInput');
+        if (koreanInput) {
+            koreanInput.value = entry.korean_prompt || '';
+        }
+        
+        // 설정 복원
+        if (entry.settings) {
+            if (entry.settings.steps) document.getElementById('editStepsInput').value = entry.settings.steps;
+            if (entry.settings.guidance_scale) document.getElementById('editGuidanceInput').value = entry.settings.guidance_scale;
+            if (entry.settings.seed) document.getElementById('editSeedInput').value = entry.settings.seed;
+        }
+        
+        switchTab('edit');
+        addEditMessage('system', '✅ 편집 설정이 복원되었습니다. 이미지를 업로드하세요.');
+    } catch (error) {
+        addEditMessage('system', `❌ 히스토리 로드 실패: ${error.message}`, 'error');
+    }
+}
+
+async function continueEditHistory(historyId) {
+    try {
+        const result = await apiCall(`/edit/history/${historyId}`);
+        const entry = result.history;
+        
+        // 결과 이미지를 새 편집의 입력으로 사용
+        if (entry.result_image_paths && entry.result_image_paths.length > 0) {
+            const imagePath = entry.result_image_paths[0];
+            
+            // 이미지 로드하여 File 객체 생성
+            const response = await fetch(imagePath);
+            const blob = await response.blob();
+            const file = new File([blob], 'continue_edit.png', { type: 'image/png' });
+            
+            handleEditImageUpload(file);
+        }
+        
+        // 프롬프트 초기화
+        document.getElementById('editKoreanInput').value = '';
+        document.getElementById('editPromptInput').value = '';
+        
+        switchTab('edit');
+        addEditMessage('system', '✅ 이전 편집 결과 이미지가 로드되었습니다. 새 편집 지시어를 입력하세요.');
+    } catch (error) {
+        addEditMessage('system', `❌ 히스토리 로드 실패: ${error.message}`, 'error');
+    }
+}
+
+async function clearEditHistory() {
+    if (!confirm('모든 편집 히스토리를 삭제하시겠습니까?')) return;
+    
+    try {
+        await apiCall('/edit/history', 'DELETE');
+        loadEditHistory();
+        addEditMessage('system', '✅ 편집 히스토리 삭제됨');
+    } catch (error) {
+        addEditMessage('system', `❌ 삭제 실패: ${error.message}`, 'error');
+    }
+}

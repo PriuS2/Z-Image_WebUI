@@ -53,7 +53,27 @@ if errorlevel 1 (
     echo [!] 일부 패키지 설치 실패. 로그를 확인하세요.
 ) else (
     echo.
-    echo [✓] 모든 패키지 설치 완료
+    echo [✓] 기본 패키지 설치 완료
+)
+
+echo.
+
+:: LongCat-Image 패키지 설치 (이미지 편집 기능)
+echo [*] LongCat-Image 패키지 설치 중...
+echo     (이미지 편집 기능에 필요합니다)
+echo.
+if exist "LongCat-Image\setup.py" (
+    pip install -e ./LongCat-Image
+    if errorlevel 1 (
+        echo.
+        echo [!] LongCat-Image 패키지 설치 실패.
+    ) else (
+        echo.
+        echo [✓] LongCat-Image 패키지 설치 완료
+    )
+) else (
+    echo [!] LongCat-Image 폴더를 찾을 수 없습니다.
+    echo     git submodule update --init 을 실행하세요.
 )
 
 echo.

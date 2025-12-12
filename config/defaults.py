@@ -20,6 +20,10 @@ RELOAD=false
 DEFAULT_MODEL=Tongyi-MAI/Z-Image-Turbo
 GGUF_MODEL_REPO=jayn7/Z-Image-Turbo-GGUF
 
+# ===== LongCat-Image-Edit Model Settings =====
+LONGCAT_EDIT_MODEL=meituan-longcat/LongCat-Image-Edit
+LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT=10
+
 # ===== LLM Settings =====
 # Provider: openai, groq, openrouter, together, ollama, lmstudio, custom
 LLM_PROVIDER=openai
@@ -70,6 +74,10 @@ MODELS_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 # ===== 모델 설정 =====
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "Tongyi-MAI/Z-Image-Turbo")
 GGUF_MODEL_REPO = os.getenv("GGUF_MODEL_REPO", "jayn7/Z-Image-Turbo-GGUF")
+
+# ===== LongCat-Image-Edit 모델 설정 =====
+LONGCAT_EDIT_MODEL = os.getenv("LONGCAT_EDIT_MODEL", "meituan-longcat/LongCat-Image-Edit")
+LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT = int(os.getenv("LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT", "10"))
 
 # ===== LLM 설정 (환경변수 우선) =====
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")  # 빈 문자열이면 settings.yaml 사용
@@ -142,6 +150,22 @@ DEFAULT_GENERATION_SETTINGS = {
     "height": 512,
     "num_inference_steps": 9,
     "guidance_scale": 0.0,
+    "num_images": 1,
+    "seed": -1,  # -1 = 랜덤
+}
+
+# LongCat-Image-Edit 모델 옵션
+EDIT_QUANTIZATION_OPTIONS = {
+    "BF16 (기본, 최고품질)": {
+        "type": "bf16",
+        "repo": LONGCAT_EDIT_MODEL,
+    },
+}
+
+# 이미지 편집 기본값
+DEFAULT_EDIT_SETTINGS = {
+    "num_inference_steps": 50,
+    "guidance_scale": 4.5,
     "num_images": 1,
     "seed": -1,  # -1 = 랜덤
 }
