@@ -466,19 +466,53 @@
                         </select>
                     </div>
                     <div class="setting-group">
-                        <label>GPU 선택</label>
+                        <label>기본 GPU 선택</label>
                         <select id="editGpuSelect">
                             <option value="1">GPU 1 (기본)</option>
                             <!-- 서버에서 동적으로 GPU 목록을 로드합니다 -->
                         </select>
-                        <small class="setting-hint">멀티 GPU 시스템에서 생성 모델과 다른 GPU를 선택하면 동시 사용 가능</small>
+                        <small class="setting-hint">분산 모드 비활성화 시 모든 컴포넌트가 이 GPU에 로드됩니다</small>
                     </div>
+                    
+                    <!-- 컴포넌트별 GPU 분산 설정 -->
+                    <div class="setting-group">
+                        <label>
+                            <input type="checkbox" id="editDistributedModeCheck">
+                            🔀 컴포넌트별 GPU 분산 (멀티 GPU 전용)
+                        </label>
+                        <small class="setting-hint">컴포넌트를 여러 GPU에 분산하여 VRAM 문제 해결</small>
+                    </div>
+                    
+                    <div id="editDistributedGpuSettings" style="display: none; margin-left: 20px; border-left: 2px solid var(--border); padding-left: 15px;">
+                        <div class="setting-group">
+                            <label>Text Encoder GPU (~8-10GB)</label>
+                            <select id="editTextEncoderGpuSelect">
+                                <option value="-1">분산 안함 (기본 GPU 사용)</option>
+                            </select>
+                            <small class="setting-hint">Qwen VLM 텍스트/이미지 인코더</small>
+                        </div>
+                        <div class="setting-group">
+                            <label>Transformer GPU (~12GB)</label>
+                            <select id="editTransformerGpuSelect">
+                                <option value="-1">분산 안함 (기본 GPU 사용)</option>
+                            </select>
+                            <small class="setting-hint">DiT 이미지 변환 모델 (가장 큼)</small>
+                        </div>
+                        <div class="setting-group">
+                            <label>VAE GPU (~0.5GB)</label>
+                            <select id="editVaeGpuSelect">
+                                <option value="-1">분산 안함 (기본 GPU 사용)</option>
+                            </select>
+                            <small class="setting-hint">이미지 인코더/디코더 (작음)</small>
+                        </div>
+                    </div>
+                    
                     <div class="setting-group">
                         <label>
                             <input type="checkbox" id="editCpuOffloadCheckSettings" checked>
-                            CPU 오프로딩 (권장, VRAM ~19GB 필요)
+                            CPU 오프로딩 (분산 모드 비활성화 시 권장)
                         </label>
-                        <small class="setting-hint">편집 모델은 용량이 크므로 CPU 오프로딩을 권장합니다.</small>
+                        <small class="setting-hint">분산 모드 사용 시 CPU 오프로딩은 비활성화됩니다</small>
                     </div>
                     <div class="setting-actions">
                         <button class="btn btn-primary" id="btnLoadEditModelSettings">

@@ -89,6 +89,13 @@ LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT = int(os.getenv("LONGCAT_EDIT_AUTO_UNLOAD_TIMEO
 GENERATION_GPU_INDEX = int(os.getenv("GENERATION_GPU_INDEX", "0"))
 EDIT_GPU_INDEX = int(os.getenv("EDIT_GPU_INDEX", "1"))
 
+# ===== 편집 모델 컴포넌트별 GPU 분산 설정 =====
+# -1이면 분산 비활성화 (단일 GPU 사용)
+# 0 이상이면 해당 컴포넌트를 지정된 GPU에 로드
+EDIT_TEXT_ENCODER_GPU = int(os.getenv("EDIT_TEXT_ENCODER_GPU", "-1"))  # Qwen VLM (~8-10GB)
+EDIT_TRANSFORMER_GPU = int(os.getenv("EDIT_TRANSFORMER_GPU", "-1"))    # DiT (~12GB)
+EDIT_VAE_GPU = int(os.getenv("EDIT_VAE_GPU", "-1"))                    # VAE (~0.5GB)
+
 # ===== LLM 설정 (환경변수 우선) =====
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")  # 빈 문자열이면 settings.yaml 사용
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")

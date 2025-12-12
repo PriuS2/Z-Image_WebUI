@@ -1204,13 +1204,37 @@ async function loadGpuList() {
                 }
             });
             
+            // 컴포넌트별 GPU 분산 드롭다운 채우기
+            const componentGpuSelects = [
+                document.getElementById('editTextEncoderGpuSelect'),
+                document.getElementById('editTransformerGpuSelect'),
+                document.getElementById('editVaeGpuSelect')
+            ];
+            
+            componentGpuSelects.forEach(select => {
+                if (!select) return;
+                
+                select.innerHTML = '<option value="-1">분산 안함 (기본 GPU 사용)</option>';
+                
+                result.gpus.forEach(gpu => {
+                    const opt = document.createElement('option');
+                    opt.value = gpu.index;
+                    opt.textContent = `GPU ${gpu.index}: ${gpu.name} (${gpu.total_memory_gb}GB)`;
+                    opt.title = `${gpu.name} - ${gpu.total_memory_gb}GB VRAM`;
+                    select.appendChild(opt);
+                });
+            });
+            
+            // 분산 모드 UI 초기화
+            initDistributedModeUI(result.count);
+            
             console.log(`GPU 목록 로드 완료: ${result.count}개 GPU`);
             
             // 단일 GPU인 경우 힌트 메시지 표시
             if (result.count === 1) {
                 addMessage('system', '💡 단일 GPU 환경입니다. 생성/편집 모델은 동시에 로드할 수 없습니다.');
             } else {
-                addMessage('system', `🎮 ${result.count}개의 GPU를 감지했습니다. 생성/편집 모델을 다른 GPU에 로드하면 동시 사용 가능합니다.`);
+                addMessage('system', `🎮 ${result.count}개의 GPU를 감지했습니다. 컴포넌트별 GPU 분산도 가능합니다.`);
             }
         } else {
             console.log('GPU를 찾을 수 없거나 CPU 모드입니다.');
@@ -1218,6 +1242,43 @@ async function loadGpuList() {
     } catch (error) {
         console.error('GPU 목록 로드 실패:', error);
     }
+}
+
+
+// 분산 모드 UI 초기화
+function initDistributedModeUI(gpuCount) {
+    const distributedCheck = document.getElementById('editDistributedModeCheck');
+    const distributedSettings = document.getElementById('editDistributedGpuSettings');
+    const cpuOffloadCheck = document.getElementById('editCpuOffloadCheckSettings');
+    
+    if (!distributedCheck || !distributedSettings) return;
+    
+    // 단일 GPU인 경우 분산 모드 비활성화
+    if (gpuCount <= 1) {
+        distributedCheck.disabled = true;
+        distributedCheck.checked = false;
+        distributedSettings.style.display = 'none';
+        return;
+    }
+    
+    // 분산 모드 체크박스 이벤트
+    distributedCheck.addEventListener('change', () => {
+        if (distributedCheck.checked) {
+            distributedSettings.style.display = 'block';
+            // 분산 모드 활성화 시 CPU 오프로딩 비활성화
+            if (cpuOffloadCheck) {
+                cpuOffloadCheck.checked = false;
+                cpuOffloadCheck.disabled = true;
+            }
+        } else {
+            distributedSettings.style.display = 'none';
+            // 분산 모드 비활성화 시 CPU 오프로딩 활성화
+            if (cpuOffloadCheck) {
+                cpuOffloadCheck.disabled = false;
+                cpuOffloadCheck.checked = true;
+            }
+        }
+    });
 }
 
 
@@ -2485,7 +2546,8 @@ async function loadEditModel() {
     }
 
     const quantization = document.getElementById('editQuantizationSelect')?.value || "BF16 (기본, 최고품질)";
-    const cpuOffload = document.getElementById('editCpuOffloadCheck')?.checked ?? true;
+    const cpuOffload = document.getElementById('editCpuOffloadCheck')?.checked ?? 
+                       document.getElementById('editCpuOffloadCheckSettings')?.checked ?? true;
     
     // GPU 선택 (편집탭 또는 설정탭에서 가져옴)
     const gpuIndex = parseInt(
@@ -2493,16 +2555,44 @@ async function loadEditModel() {
         document.getElementById('editGpuSelect')?.value || 
         '1'
     );
+    
+    // 분산 모드 확인
+    const distributedMode = document.getElementById('editDistributedModeCheck')?.checked || false;
+    
+    // 컴포넌트별 GPU 설정 (분산 모드일 때만 유효)
+    let textEncoderGpu = -1;
+    let transformerGpu = -1;
+    let vaeGpu = -1;
+    
+    if (distributedMode) {
+        textEncoderGpu = parseInt(document.getElementById('editTextEncoderGpuSelect')?.value || '-1');
+        transformerGpu = parseInt(document.getElementById('editTransformerGpuSelect')?.value || '-1');
+        vaeGpu = parseInt(document.getElementById('editVaeGpuSelect')?.value || '-1');
+    }
 
     try {
         setEditModelLoadingState(true);
-        addEditMessage('system', `🔄 편집 모델 로딩을 시작합니다... (GPU ${gpuIndex})`);
+        
+        // 로딩 메시지
+        if (distributedMode && (textEncoderGpu >= 0 || transformerGpu >= 0 || vaeGpu >= 0)) {
+            const distInfo = [];
+            if (textEncoderGpu >= 0) distInfo.push(`TextEnc→GPU${textEncoderGpu}`);
+            if (transformerGpu >= 0) distInfo.push(`Trans→GPU${transformerGpu}`);
+            if (vaeGpu >= 0) distInfo.push(`VAE→GPU${vaeGpu}`);
+            addEditMessage('system', `🔀 분산 모드로 편집 모델 로딩... (${distInfo.join(', ')})`);
+        } else {
+            addEditMessage('system', `🔄 편집 모델 로딩을 시작합니다... (GPU ${gpuIndex})`);
+        }
+        
         showEditProgress('모델 로딩 준비 중...', 5);
 
         await apiCall('/edit/model/load', 'POST', {
             quantization,
-            cpu_offload: cpuOffload,
-            gpu_index: gpuIndex
+            cpu_offload: distributedMode ? false : cpuOffload,  // 분산 모드일 때 CPU 오프로딩 비활성화
+            gpu_index: gpuIndex,
+            text_encoder_gpu: textEncoderGpu,
+            transformer_gpu: transformerGpu,
+            vae_gpu: vaeGpu
         });
 
         updateEditModelStatus();

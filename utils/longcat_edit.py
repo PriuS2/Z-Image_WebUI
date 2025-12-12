@@ -12,6 +12,9 @@ from config.defaults import (
     EDIT_QUANTIZATION_OPTIONS,
     DEFAULT_EDIT_SETTINGS,
     EDIT_GPU_INDEX,
+    EDIT_TEXT_ENCODER_GPU,
+    EDIT_TRANSFORMER_GPU,
+    EDIT_VAE_GPU,
 )
 from utils.llm_client import llm_client
 
@@ -50,6 +53,11 @@ class LongCatEditManager:
         self.current_model: Optional[str] = None
         self.device: Optional[str] = None
         self.gpu_index: int = EDIT_GPU_INDEX
+        # 컴포넌트별 GPU 설정 (-1이면 분산 비활성화)
+        self.text_encoder_gpu: int = EDIT_TEXT_ENCODER_GPU
+        self.transformer_gpu: int = EDIT_TRANSFORMER_GPU
+        self.vae_gpu: int = EDIT_VAE_GPU
+        self.distributed_mode: bool = False  # 분산 모드 활성화 여부
         self._lock = asyncio.Lock()
     
     @property
@@ -76,6 +84,9 @@ class LongCatEditManager:
         cpu_offload: bool = True,
         model_path: Optional[str] = None,
         gpu_index: Optional[int] = None,
+        text_encoder_gpu: Optional[int] = None,
+        transformer_gpu: Optional[int] = None,
+        vae_gpu: Optional[int] = None,
         progress_callback: Optional[Callable[[int, str, str], Any]] = None
     ) -> Tuple[bool, str]:
         """
@@ -85,7 +96,10 @@ class LongCatEditManager:
             quantization: 양자화 옵션
             cpu_offload: CPU 오프로딩 사용 여부 (VRAM 절약)
             model_path: 커스텀 모델 경로
-            gpu_index: 사용할 GPU 인덱스 (None이면 기본값 사용)
+            gpu_index: 사용할 GPU 인덱스 (None이면 기본값 사용) - 분산 비활성화 시 사용
+            text_encoder_gpu: Text Encoder GPU 인덱스 (-1 또는 None이면 분산 안함)
+            transformer_gpu: Transformer GPU 인덱스 (-1 또는 None이면 분산 안함)
+            vae_gpu: VAE GPU 인덱스 (-1 또는 None이면 분산 안함)
             progress_callback: 진행상황 콜백 (percent, label, detail)
         
         Returns:
@@ -100,10 +114,24 @@ class LongCatEditManager:
                 if gpu_index is not None:
                     self.gpu_index = gpu_index
                 
+                # 컴포넌트별 GPU 설정 (-1 또는 None이면 분산 비활성화)
+                if text_encoder_gpu is not None and text_encoder_gpu >= 0:
+                    self.text_encoder_gpu = text_encoder_gpu
+                if transformer_gpu is not None and transformer_gpu >= 0:
+                    self.transformer_gpu = transformer_gpu
+                if vae_gpu is not None and vae_gpu >= 0:
+                    self.vae_gpu = vae_gpu
+                
                 # GPU 인덱스 유효성 검사
                 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
                 if gpu_count > 0 and self.gpu_index >= gpu_count:
                     self.gpu_index = 0  # 유효하지 않으면 0으로 폴백
+                
+                # 분산 모드 활성화 여부 확인
+                self.distributed_mode = (
+                    gpu_count > 1 and 
+                    (self.text_encoder_gpu >= 0 or self.transformer_gpu >= 0 or self.vae_gpu >= 0)
+                )
                 
                 self.device = self.get_device(self.gpu_index)
                 quant_info = EDIT_QUANTIZATION_OPTIONS.get(quantization)
@@ -124,7 +152,18 @@ class LongCatEditManager:
                                 asyncio.to_thread(progress_callback, percent, label, detail)
                             )
                 
-                report_progress(5, "🔧 LongCat-Image-Edit 모델 초기화 중...", f"디바이스: {self.device}")
+                # 분산 모드 메시지
+                if self.distributed_mode:
+                    dist_info = []
+                    if self.text_encoder_gpu >= 0:
+                        dist_info.append(f"TextEnc→GPU{self.text_encoder_gpu}")
+                    if self.transformer_gpu >= 0:
+                        dist_info.append(f"Transformer→GPU{self.transformer_gpu}")
+                    if self.vae_gpu >= 0:
+                        dist_info.append(f"VAE→GPU{self.vae_gpu}")
+                    report_progress(5, "🔧 분산 모드로 모델 초기화 중...", ", ".join(dist_info))
+                else:
+                    report_progress(5, "🔧 LongCat-Image-Edit 모델 초기화 중...", f"디바이스: {self.device}")
                 
                 # LongCat-Image 패키지에서 임포트
                 from transformers import AutoProcessor
@@ -165,19 +204,76 @@ class LongCatEditManager:
                 )
                 
                 # 디바이스 설정
-                gpu_name = torch.cuda.get_device_properties(self.gpu_index).name if torch.cuda.is_available() else "N/A"
-                report_progress(85, f"🚀 GPU{self.gpu_index} ({gpu_name})로 모델 전송 중...", "")
+                gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
                 
-                if cpu_offload:
-                    # CPU 오프로딩 시에도 특정 GPU 사용
+                if self.distributed_mode and gpu_count > 1:
+                    # 분산 모드: 각 컴포넌트를 지정된 GPU로 이동
+                    report_progress(85, "🔀 컴포넌트별 GPU 분산 중...", "")
+                    
+                    def distribute_components():
+                        # Text Encoder 배치
+                        if self.text_encoder_gpu >= 0 and self.text_encoder_gpu < gpu_count:
+                            te_device = f"cuda:{self.text_encoder_gpu}"
+                            if hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
+                                self.pipe.text_encoder = self.pipe.text_encoder.to(te_device)
+                                print(f"📍 Text Encoder → GPU{self.text_encoder_gpu}")
+                        
+                        # Transformer 배치
+                        if self.transformer_gpu >= 0 and self.transformer_gpu < gpu_count:
+                            tf_device = f"cuda:{self.transformer_gpu}"
+                            if hasattr(self.pipe, 'transformer') and self.pipe.transformer is not None:
+                                self.pipe.transformer = self.pipe.transformer.to(tf_device)
+                                print(f"📍 Transformer → GPU{self.transformer_gpu}")
+                        
+                        # VAE 배치
+                        if self.vae_gpu >= 0 and self.vae_gpu < gpu_count:
+                            vae_device = f"cuda:{self.vae_gpu}"
+                            if hasattr(self.pipe, 'vae') and self.pipe.vae is not None:
+                                self.pipe.vae = self.pipe.vae.to(vae_device)
+                                print(f"📍 VAE → GPU{self.vae_gpu}")
+                        
+                        # 배치되지 않은 컴포넌트는 기본 GPU로
+                        default_device = f"cuda:{self.gpu_index}"
+                        if self.text_encoder_gpu < 0 and hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
+                            self.pipe.text_encoder = self.pipe.text_encoder.to(default_device)
+                        if self.transformer_gpu < 0 and hasattr(self.pipe, 'transformer') and self.pipe.transformer is not None:
+                            self.pipe.transformer = self.pipe.transformer.to(default_device)
+                        if self.vae_gpu < 0 and hasattr(self.pipe, 'vae') and self.pipe.vae is not None:
+                            self.pipe.vae = self.pipe.vae.to(default_device)
+                    
+                    await asyncio.to_thread(distribute_components)
+                    
+                    # 분산 배치 정보 생성
+                    dist_info = []
+                    if self.text_encoder_gpu >= 0:
+                        dist_info.append(f"TextEnc→GPU{self.text_encoder_gpu}")
+                    if self.transformer_gpu >= 0:
+                        dist_info.append(f"Trans→GPU{self.transformer_gpu}")
+                    if self.vae_gpu >= 0:
+                        dist_info.append(f"VAE→GPU{self.vae_gpu}")
+                    
+                    report_progress(95, "⚙️ 분산 배치 완료", ", ".join(dist_info) if dist_info else "기본 GPU 사용")
+                
+                elif cpu_offload:
+                    # CPU 오프로딩 모드
+                    gpu_name = torch.cuda.get_device_properties(self.gpu_index).name if gpu_count > 0 else "N/A"
+                    report_progress(85, f"🚀 GPU{self.gpu_index} ({gpu_name})로 모델 전송 중...", "")
                     await asyncio.to_thread(self.pipe.enable_model_cpu_offload, gpu_id=self.gpu_index)
                     report_progress(95, "⚙️ CPU 오프로딩 설정됨", f"GPU{self.gpu_index} 사용, VRAM 부족 시 RAM 사용")
+                
                 else:
+                    # 단일 GPU 모드
+                    gpu_name = torch.cuda.get_device_properties(self.gpu_index).name if gpu_count > 0 else "N/A"
+                    report_progress(85, f"🚀 GPU{self.gpu_index} ({gpu_name})로 모델 전송 중...", "")
                     await asyncio.to_thread(self.pipe.to, self.device, torch.bfloat16)
                 
                 self.current_model = quantization
                 
-                report_progress(100, "✅ LongCat-Image-Edit 모델 로드 완료!", self._get_vram_info())
+                # 완료 메시지
+                if self.distributed_mode:
+                    report_progress(100, "✅ 분산 모드로 모델 로드 완료!", self._get_all_vram_info())
+                else:
+                    report_progress(100, "✅ LongCat-Image-Edit 모델 로드 완료!", self._get_vram_info())
                 
                 return True, f"모델 로드 완료: {checkpoint_dir}"
                 
@@ -229,6 +325,30 @@ class LongCatEditManager:
             vram_used = torch.cuda.memory_allocated(gpu_idx) / 1024**3
             vram_total = torch.cuda.get_device_properties(gpu_idx).total_memory / 1024**3
             return f"GPU{gpu_idx} VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB"
+        return "N/A"
+    
+    def _get_all_vram_info(self) -> str:
+        """모든 GPU의 VRAM 사용량 정보 (분산 모드용)"""
+        if torch.cuda.is_available():
+            infos = []
+            gpu_count = torch.cuda.device_count()
+            
+            # 사용 중인 GPU만 표시
+            used_gpus = set([self.gpu_index])
+            if self.text_encoder_gpu >= 0:
+                used_gpus.add(self.text_encoder_gpu)
+            if self.transformer_gpu >= 0:
+                used_gpus.add(self.transformer_gpu)
+            if self.vae_gpu >= 0:
+                used_gpus.add(self.vae_gpu)
+            
+            for gpu_idx in sorted(used_gpus):
+                if gpu_idx < gpu_count:
+                    vram_used = torch.cuda.memory_allocated(gpu_idx) / 1024**3
+                    vram_total = torch.cuda.get_device_properties(gpu_idx).total_memory / 1024**3
+                    infos.append(f"GPU{gpu_idx}: {vram_used:.1f}/{vram_total:.1f}GB")
+            
+            return " | ".join(infos)
         return "N/A"
     
     def _hook_progress_bar(self, step_callback):
