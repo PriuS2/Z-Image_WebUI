@@ -187,15 +187,12 @@ class LongCatEditManager:
     
     def _hook_progress_bar(self, step_callback):
         """파이프라인의 progress_bar를 후킹하여 스텝별 콜백 호출"""
-        from tqdm import tqdm
-        import types
-        
         pipe = self.pipe
-        original_progress_bar = pipe.progress_bar
+        original_progress_bar = pipe.progress_bar.__func__  # 언바운드 메서드 가져오기
         
-        def hooked_progress_bar(*args, **kwargs):
+        def hooked_progress_bar(self_pipe, *args, **kwargs):
             # 원래 progress_bar 호출
-            pbar = original_progress_bar(*args, **kwargs)
+            pbar = original_progress_bar(self_pipe, *args, **kwargs)
             
             # tqdm의 update 메서드를 후킹
             original_update = pbar.update
@@ -211,10 +208,8 @@ class LongCatEditManager:
             return pbar
         
         # 메서드 바인딩
-        pipe.progress_bar = types.MethodType(
-            lambda self, *args, **kwargs: hooked_progress_bar(*args, **kwargs),
-            pipe
-        )
+        import types
+        pipe.progress_bar = types.MethodType(hooked_progress_bar, pipe)
         
         return original_progress_bar
     
@@ -269,33 +264,34 @@ class LongCatEditManager:
             
             generator = torch.Generator("cpu").manual_seed(seed)
             
+            # 메인 이벤트 루프 캡처 (별도 스레드에서 사용하기 위해)
+            main_loop = asyncio.get_running_loop()
+            
             results = []
             for i in range(num_images):
                 current_seed = seed + i
                 if i > 0:
                     generator = torch.Generator("cpu").manual_seed(current_seed)
                 
-                # 스텝 콜백을 위한 상태 저장
+                # 스텝 콜백을 위한 상태 저장 (클로저 문제 방지)
                 current_image_idx = i
                 total_images = num_images
                 
-                # 스텝별 콜백 함수
-                def step_callback(current_step, total_steps):
-                    if progress_callback:
-                        # sync 콜백 호출 (별도 스레드에서 실행되므로)
-                        try:
-                            # 이벤트 루프가 있으면 asyncio로 실행
-                            loop = asyncio.get_event_loop()
-                            if loop.is_running():
-                                asyncio.run_coroutine_threadsafe(
-                                    progress_callback(current_image_idx + 1, total_images, current_step, total_steps),
-                                    loop
-                                )
-                        except RuntimeError:
-                            pass  # 이벤트 루프가 없으면 무시
+                # 스텝별 콜백 함수 생성
+                def create_step_callback(img_idx, total_imgs):
+                    def step_callback(current_step, total_steps):
+                        if progress_callback:
+                            # 메인 이벤트 루프에 코루틴 스케줄링
+                            asyncio.run_coroutine_threadsafe(
+                                progress_callback(img_idx + 1, total_imgs, current_step, total_steps),
+                                main_loop
+                            )
+                    return step_callback
+                
+                step_cb = create_step_callback(current_image_idx, total_images)
                 
                 # progress_bar 후킹
-                original_progress_bar = self._hook_progress_bar(step_callback)
+                original_progress_bar = self._hook_progress_bar(step_cb)
                 
                 try:
                     # 편집 실행
