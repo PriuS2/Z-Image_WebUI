@@ -43,7 +43,6 @@ from config.defaults import (
     EDIT_GPU_INDEX,
     EDIT_TEXT_ENCODER_GPU,
     EDIT_TRANSFORMER_GPU,
-    EDIT_VAE_GPU,
 )
 from config.templates import PROMPT_TEMPLATES
 from utils.settings import settings
@@ -246,8 +245,7 @@ class EditModelLoadRequest(BaseModel):
     gpu_index: int = EDIT_GPU_INDEX  # 사용할 GPU 인덱스 (분산 비활성화 시)
     # 컴포넌트별 GPU 분산 설정 (-1이면 분산 안함, 기본 GPU 사용)
     text_encoder_gpu: int = EDIT_TEXT_ENCODER_GPU  # Qwen VLM (~8-10GB)
-    transformer_gpu: int = EDIT_TRANSFORMER_GPU    # DiT (~12GB)
-    vae_gpu: int = EDIT_VAE_GPU                    # VAE (~0.5GB)
+    transformer_gpu: int = EDIT_TRANSFORMER_GPU    # DiT + VAE (~12.5GB)
 
 
 class EditGenerateRequest(BaseModel):
@@ -1545,23 +1543,20 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
             
             # 분산 모드 확인
             is_distributed = (
-                gpu_count > 1 and 
-                (model_request.text_encoder_gpu >= 0 or 
-                 model_request.transformer_gpu >= 0 or 
-                 model_request.vae_gpu >= 0)
+                gpu_count > 1 and
+                (model_request.text_encoder_gpu >= 0 or
+                 model_request.transformer_gpu >= 0)
             )
-            
+
             gpu_name = torch.cuda.get_device_properties(gpu_index).name if gpu_count > 0 else "N/A"
-            
+
             # 초기화 메시지
             if is_distributed:
                 dist_info = []
                 if model_request.text_encoder_gpu >= 0:
                     dist_info.append(f"TextEnc→GPU{model_request.text_encoder_gpu}")
                 if model_request.transformer_gpu >= 0:
-                    dist_info.append(f"Trans→GPU{model_request.transformer_gpu}")
-                if model_request.vae_gpu >= 0:
-                    dist_info.append(f"VAE→GPU{model_request.vae_gpu}")
+                    dist_info.append(f"Trans+VAE→GPU{model_request.transformer_gpu}")
                 detail_msg = ", ".join(dist_info)
                 label_msg = "🔀 분산 모드로 편집 모델 로드 시작..."
             else:
@@ -1583,7 +1578,6 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 gpu_index=gpu_index,
                 text_encoder_gpu=model_request.text_encoder_gpu,
                 transformer_gpu=model_request.transformer_gpu,
-                vae_gpu=model_request.vae_gpu,
                 progress_callback=progress_callback
             )
             

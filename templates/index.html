@@ -492,18 +492,11 @@
                             <small class="setting-hint">Qwen VLM 텍스트/이미지 인코더</small>
                         </div>
                         <div class="setting-group">
-                            <label>Transformer GPU (~12GB)</label>
+                            <label>Transformer + VAE GPU (~12.5GB)</label>
                             <select id="editTransformerGpuSelect">
                                 <option value="-1">분산 안함 (기본 GPU 사용)</option>
                             </select>
-                            <small class="setting-hint">DiT 이미지 변환 모델 (가장 큼)</small>
-                        </div>
-                        <div class="setting-group">
-                            <label>VAE GPU (~0.5GB)</label>
-                            <select id="editVaeGpuSelect">
-                                <option value="-1">분산 안함 (기본 GPU 사용)</option>
-                            </select>
-                            <small class="setting-hint">이미지 인코더/디코더 (작음)</small>
+                            <small class="setting-hint">DiT 이미지 변환 모델 + VAE (함께 배치됨)</small>
                         </div>
                     </div>
                     

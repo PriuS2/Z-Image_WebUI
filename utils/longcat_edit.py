@@ -14,7 +14,6 @@ from config.defaults import (
     EDIT_GPU_INDEX,
     EDIT_TEXT_ENCODER_GPU,
     EDIT_TRANSFORMER_GPU,
-    EDIT_VAE_GPU,
 )
 from utils.llm_client import llm_client
 
@@ -55,8 +54,7 @@ class LongCatEditManager:
         self.gpu_index: int = EDIT_GPU_INDEX
         # 컴포넌트별 GPU 설정 (-1이면 분산 비활성화)
         self.text_encoder_gpu: int = EDIT_TEXT_ENCODER_GPU
-        self.transformer_gpu: int = EDIT_TRANSFORMER_GPU
-        self.vae_gpu: int = EDIT_VAE_GPU
+        self.transformer_gpu: int = EDIT_TRANSFORMER_GPU  # VAE도 함께 배치
         self.distributed_mode: bool = False  # 분산 모드 활성화 여부
         self._lock = asyncio.Lock()
     
@@ -86,7 +84,6 @@ class LongCatEditManager:
         gpu_index: Optional[int] = None,
         text_encoder_gpu: Optional[int] = None,
         transformer_gpu: Optional[int] = None,
-        vae_gpu: Optional[int] = None,
         progress_callback: Optional[Callable[[int, str, str], Any]] = None
     ) -> Tuple[bool, str]:
         """
@@ -98,8 +95,7 @@ class LongCatEditManager:
             model_path: 커스텀 모델 경로
             gpu_index: 사용할 GPU 인덱스 (None이면 기본값 사용) - 분산 비활성화 시 사용
             text_encoder_gpu: Text Encoder GPU 인덱스 (-1 또는 None이면 분산 안함)
-            transformer_gpu: Transformer GPU 인덱스 (-1 또는 None이면 분산 안함)
-            vae_gpu: VAE GPU 인덱스 (-1 또는 None이면 분산 안함)
+            transformer_gpu: Transformer + VAE GPU 인덱스 (-1 또는 None이면 분산 안함)
             progress_callback: 진행상황 콜백 (percent, label, detail)
         
         Returns:
@@ -119,18 +115,16 @@ class LongCatEditManager:
                     self.text_encoder_gpu = text_encoder_gpu
                 if transformer_gpu is not None and transformer_gpu >= 0:
                     self.transformer_gpu = transformer_gpu
-                if vae_gpu is not None and vae_gpu >= 0:
-                    self.vae_gpu = vae_gpu
                 
                 # GPU 인덱스 유효성 검사
                 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
                 if gpu_count > 0 and self.gpu_index >= gpu_count:
                     self.gpu_index = 0  # 유효하지 않으면 0으로 폴백
                 
-                # 분산 모드 활성화 여부 확인
+                # 분산 모드 활성화 여부 확인 (Text Encoder와 Transformer+VAE를 다른 GPU에 배치)
                 self.distributed_mode = (
                     gpu_count > 1 and 
-                    (self.text_encoder_gpu >= 0 or self.transformer_gpu >= 0 or self.vae_gpu >= 0)
+                    (self.text_encoder_gpu >= 0 or self.transformer_gpu >= 0)
                 )
                 
                 self.device = self.get_device(self.gpu_index)
@@ -158,9 +152,7 @@ class LongCatEditManager:
                     if self.text_encoder_gpu >= 0:
                         dist_info.append(f"TextEnc→GPU{self.text_encoder_gpu}")
                     if self.transformer_gpu >= 0:
-                        dist_info.append(f"Transformer→GPU{self.transformer_gpu}")
-                    if self.vae_gpu >= 0:
-                        dist_info.append(f"VAE→GPU{self.vae_gpu}")
+                        dist_info.append(f"Trans+VAE→GPU{self.transformer_gpu}")
                     report_progress(5, "🔧 분산 모드로 모델 초기화 중...", ", ".join(dist_info))
                 else:
                     report_progress(5, "🔧 LongCat-Image-Edit 모델 초기화 중...", f"디바이스: {self.device}")
@@ -207,39 +199,39 @@ class LongCatEditManager:
                 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
                 
                 if self.distributed_mode and gpu_count > 1:
-                    # 분산 모드: 각 컴포넌트를 지정된 GPU로 이동
+                    # 분산 모드: 각 컴포넌트를 지정된 GPU로 이동 + accelerate hooks 사용
                     report_progress(85, "🔀 컴포넌트별 GPU 분산 중...", "")
                     
                     def distribute_components():
+                        from accelerate.hooks import add_hook_to_module, AlignDevicesHook
+                        
+                        default_device = torch.device(f"cuda:{self.gpu_index}")
+                        
                         # Text Encoder 배치
+                        te_device = default_device
                         if self.text_encoder_gpu >= 0 and self.text_encoder_gpu < gpu_count:
-                            te_device = f"cuda:{self.text_encoder_gpu}"
-                            if hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
-                                self.pipe.text_encoder = self.pipe.text_encoder.to(te_device)
-                                print(f"📍 Text Encoder → GPU{self.text_encoder_gpu}")
+                            te_device = torch.device(f"cuda:{self.text_encoder_gpu}")
+                        if hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
+                            self.pipe.text_encoder = self.pipe.text_encoder.to(te_device)
+                            # Hook 추가: forward 시 입력을 자동으로 해당 디바이스로 이동
+                            add_hook_to_module(self.pipe.text_encoder, AlignDevicesHook(execution_device=te_device))
+                            print(f"📍 Text Encoder → {te_device}")
                         
-                        # Transformer 배치
+                        # Transformer + VAE 배치 (같은 GPU에 함께 배치)
+                        tf_vae_device = default_device
                         if self.transformer_gpu >= 0 and self.transformer_gpu < gpu_count:
-                            tf_device = f"cuda:{self.transformer_gpu}"
-                            if hasattr(self.pipe, 'transformer') and self.pipe.transformer is not None:
-                                self.pipe.transformer = self.pipe.transformer.to(tf_device)
-                                print(f"📍 Transformer → GPU{self.transformer_gpu}")
+                            tf_vae_device = torch.device(f"cuda:{self.transformer_gpu}")
                         
-                        # VAE 배치
-                        if self.vae_gpu >= 0 and self.vae_gpu < gpu_count:
-                            vae_device = f"cuda:{self.vae_gpu}"
-                            if hasattr(self.pipe, 'vae') and self.pipe.vae is not None:
-                                self.pipe.vae = self.pipe.vae.to(vae_device)
-                                print(f"📍 VAE → GPU{self.vae_gpu}")
+                        if hasattr(self.pipe, 'transformer') and self.pipe.transformer is not None:
+                            self.pipe.transformer = self.pipe.transformer.to(tf_vae_device)
+                            add_hook_to_module(self.pipe.transformer, AlignDevicesHook(execution_device=tf_vae_device))
+                            print(f"📍 Transformer → {tf_vae_device}")
                         
-                        # 배치되지 않은 컴포넌트는 기본 GPU로
-                        default_device = f"cuda:{self.gpu_index}"
-                        if self.text_encoder_gpu < 0 and hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
-                            self.pipe.text_encoder = self.pipe.text_encoder.to(default_device)
-                        if self.transformer_gpu < 0 and hasattr(self.pipe, 'transformer') and self.pipe.transformer is not None:
-                            self.pipe.transformer = self.pipe.transformer.to(default_device)
-                        if self.vae_gpu < 0 and hasattr(self.pipe, 'vae') and self.pipe.vae is not None:
-                            self.pipe.vae = self.pipe.vae.to(default_device)
+                        # VAE는 Transformer와 같은 GPU에 배치
+                        if hasattr(self.pipe, 'vae') and self.pipe.vae is not None:
+                            self.pipe.vae = self.pipe.vae.to(tf_vae_device)
+                            add_hook_to_module(self.pipe.vae, AlignDevicesHook(execution_device=tf_vae_device))
+                            print(f"📍 VAE → {tf_vae_device} (Transformer와 동일)")
                     
                     await asyncio.to_thread(distribute_components)
                     
@@ -248,9 +240,7 @@ class LongCatEditManager:
                     if self.text_encoder_gpu >= 0:
                         dist_info.append(f"TextEnc→GPU{self.text_encoder_gpu}")
                     if self.transformer_gpu >= 0:
-                        dist_info.append(f"Trans→GPU{self.transformer_gpu}")
-                    if self.vae_gpu >= 0:
-                        dist_info.append(f"VAE→GPU{self.vae_gpu}")
+                        dist_info.append(f"Trans+VAE→GPU{self.transformer_gpu}")
                     
                     report_progress(95, "⚙️ 분산 배치 완료", ", ".join(dist_info) if dist_info else "기본 GPU 사용")
                 
@@ -338,9 +328,7 @@ class LongCatEditManager:
             if self.text_encoder_gpu >= 0:
                 used_gpus.add(self.text_encoder_gpu)
             if self.transformer_gpu >= 0:
-                used_gpus.add(self.transformer_gpu)
-            if self.vae_gpu >= 0:
-                used_gpus.add(self.vae_gpu)
+                used_gpus.add(self.transformer_gpu)  # VAE도 여기에 포함
             
             for gpu_idx in sorted(used_gpus):
                 if gpu_idx < gpu_count:

@@ -93,8 +93,7 @@ EDIT_GPU_INDEX = int(os.getenv("EDIT_GPU_INDEX", "1"))
 # -1이면 분산 비활성화 (단일 GPU 사용)
 # 0 이상이면 해당 컴포넌트를 지정된 GPU에 로드
 EDIT_TEXT_ENCODER_GPU = int(os.getenv("EDIT_TEXT_ENCODER_GPU", "-1"))  # Qwen VLM (~8-10GB)
-EDIT_TRANSFORMER_GPU = int(os.getenv("EDIT_TRANSFORMER_GPU", "-1"))    # DiT (~12GB)
-EDIT_VAE_GPU = int(os.getenv("EDIT_VAE_GPU", "-1"))                    # VAE (~0.5GB)
+EDIT_TRANSFORMER_GPU = int(os.getenv("EDIT_TRANSFORMER_GPU", "-1"))    # DiT + VAE (~12.5GB) - VAE는 Transformer와 함께 배치
 
 # ===== LLM 설정 (환경변수 우선) =====
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")  # 빈 문자열이면 settings.yaml 사용

@@ -1207,8 +1207,7 @@ async function loadGpuList() {
             // 컴포넌트별 GPU 분산 드롭다운 채우기
             const componentGpuSelects = [
                 document.getElementById('editTextEncoderGpuSelect'),
-                document.getElementById('editTransformerGpuSelect'),
-                document.getElementById('editVaeGpuSelect')
+                document.getElementById('editTransformerGpuSelect')
             ];
             
             componentGpuSelects.forEach(select => {
@@ -2562,23 +2561,20 @@ async function loadEditModel() {
     // 컴포넌트별 GPU 설정 (분산 모드일 때만 유효)
     let textEncoderGpu = -1;
     let transformerGpu = -1;
-    let vaeGpu = -1;
-    
+
     if (distributedMode) {
         textEncoderGpu = parseInt(document.getElementById('editTextEncoderGpuSelect')?.value || '-1');
         transformerGpu = parseInt(document.getElementById('editTransformerGpuSelect')?.value || '-1');
-        vaeGpu = parseInt(document.getElementById('editVaeGpuSelect')?.value || '-1');
     }
 
     try {
         setEditModelLoadingState(true);
         
         // 로딩 메시지
-        if (distributedMode && (textEncoderGpu >= 0 || transformerGpu >= 0 || vaeGpu >= 0)) {
+        if (distributedMode && (textEncoderGpu >= 0 || transformerGpu >= 0)) {
             const distInfo = [];
             if (textEncoderGpu >= 0) distInfo.push(`TextEnc→GPU${textEncoderGpu}`);
-            if (transformerGpu >= 0) distInfo.push(`Trans→GPU${transformerGpu}`);
-            if (vaeGpu >= 0) distInfo.push(`VAE→GPU${vaeGpu}`);
+            if (transformerGpu >= 0) distInfo.push(`Trans+VAE→GPU${transformerGpu}`);
             addEditMessage('system', `🔀 분산 모드로 편집 모델 로딩... (${distInfo.join(', ')})`);
         } else {
             addEditMessage('system', `🔄 편집 모델 로딩을 시작합니다... (GPU ${gpuIndex})`);
@@ -2591,8 +2587,7 @@ async function loadEditModel() {
             cpu_offload: distributedMode ? false : cpuOffload,  // 분산 모드일 때 CPU 오프로딩 비활성화
             gpu_index: gpuIndex,
             text_encoder_gpu: textEncoderGpu,
-            transformer_gpu: transformerGpu,
-            vae_gpu: vaeGpu
+            transformer_gpu: transformerGpu
         });
 
         updateEditModelStatus();
