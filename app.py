@@ -458,6 +458,12 @@ async def execute_generation(request_data: dict) -> dict:
         "content": "🎨 이미지 생성 중..."
     })
     
+    # 생성 시작 전 GPU 메모리 정리
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    gc.collect()
+    
     # 세션별 출력 디렉토리
     if session:
         outputs_dir = session.get_outputs_dir()
@@ -519,6 +525,16 @@ async def execute_generation(request_data: dict) -> dict:
             "seed": current_seed,
             "path": f"/outputs/{session_id}/{filename}" if session else f"/outputs/{filename}"
         })
+        
+        # 각 이미지 생성 후 메모리 정리 (여러 장 생성 시 OOM 방지)
+        if num_images > 1 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    # 생성 완료 후 GPU 메모리 정리
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    gc.collect()
     
     # 히스토리 추가 (세션별)
     if session:

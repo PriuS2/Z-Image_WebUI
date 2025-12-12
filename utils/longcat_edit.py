@@ -49,6 +49,7 @@ class LongCatEditManager:
         self.current_model: Optional[str] = None
         self.device: Optional[str] = None
         self._lock = asyncio.Lock()
+        self._original_progress_bar = None  # 원본 progress_bar 메서드 저장
     
     @property
     def is_loaded(self) -> bool:
@@ -157,6 +158,9 @@ class LongCatEditManager:
                 
                 self.current_model = quantization
                 
+                # 원본 progress_bar 메서드 저장 (후킹 복원용)
+                self._original_progress_bar = self.pipe.progress_bar.__func__
+                
                 report_progress(100, "✅ LongCat-Image-Edit 모델 로드 완료!", self._get_vram_info())
                 
                 return True, f"모델 로드 완료: {checkpoint_dir}"
@@ -195,6 +199,7 @@ class LongCatEditManager:
             self.text_processor = None
         
         self.current_model = None
+        self._original_progress_bar = None  # 원본 progress_bar 참조도 정리
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -213,7 +218,13 @@ class LongCatEditManager:
     def _hook_progress_bar(self, step_callback):
         """파이프라인의 progress_bar를 후킹하여 스텝별 콜백 호출"""
         pipe = self.pipe
-        original_progress_bar = pipe.progress_bar.__func__  # 언바운드 메서드 가져오기
+        
+        # 로드 시 저장된 원본 progress_bar 사용
+        if self._original_progress_bar is None:
+            print("[경고] 원본 progress_bar가 저장되지 않음, 현재 메서드 사용")
+            original_progress_bar = pipe.progress_bar.__func__
+        else:
+            original_progress_bar = self._original_progress_bar
         
         def hooked_progress_bar(self_pipe, *args, **kwargs):
             # 원래 progress_bar 호출
@@ -235,14 +246,12 @@ class LongCatEditManager:
         # 메서드 바인딩
         import types
         pipe.progress_bar = types.MethodType(hooked_progress_bar, pipe)
-        
-        return original_progress_bar
     
-    def _restore_progress_bar(self, original_progress_bar):
+    def _restore_progress_bar(self):
         """원래 progress_bar 복원"""
         import types
-        if self.pipe and original_progress_bar:
-            self.pipe.progress_bar = types.MethodType(original_progress_bar, self.pipe)
+        if self.pipe and self._original_progress_bar:
+            self.pipe.progress_bar = types.MethodType(self._original_progress_bar, self.pipe)
     
     async def analyze_reference_image(
         self,
@@ -333,6 +342,12 @@ class LongCatEditManager:
         try:
             import random
             
+            # 편집 시작 전 GPU 메모리 정리
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            gc.collect()
+            
             # RGB로 변환
             if image.mode != "RGB":
                 image = image.convert("RGB")
@@ -389,7 +404,7 @@ class LongCatEditManager:
                 step_cb = create_step_callback(current_image_idx, total_images)
                 
                 # progress_bar 후킹
-                original_progress_bar = self._hook_progress_bar(step_cb)
+                self._hook_progress_bar(step_cb)
                 
                 try:
                     # 편집 실행 (final_prompt 사용 - 참조 이미지 분석 결과 포함)
@@ -407,16 +422,28 @@ class LongCatEditManager:
                     result_image = await asyncio.to_thread(run_edit)
                 finally:
                     # progress_bar 복원
-                    self._restore_progress_bar(original_progress_bar)
+                    self._restore_progress_bar()
                 
                 results.append({
                     "image": result_image,
                     "seed": current_seed
                 })
             
+            # 편집 완료 후 GPU 메모리 정리
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            gc.collect()
+            
             return True, results, f"편집 완료 (시드: {seed})"
             
         except Exception as e:
+            # 에러 발생 시에도 progress_bar 복원 및 메모리 정리
+            self._restore_progress_bar()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            gc.collect()
             return False, [], f"편집 실패: {str(e)}"
 
 
