@@ -402,18 +402,43 @@ function addImageMessage(images, prompt) {
     const imagesDiv = document.createElement('div');
     imagesDiv.className = 'message-images';
     
-    images.forEach(img => {
+    // 이미지 목록 생성 (네비게이션용)
+    const imageList = images.map(img => ({
+        path: img.path,
+        metadata: { prompt, seed: img.seed, width: img.width, height: img.height }
+    }));
+    
+    images.forEach((img, index) => {
         const imgEl = document.createElement('img');
         // base64가 있으면 사용, 없으면 path 사용
         imgEl.src = img.base64 ? `data:image/png;base64,${img.base64}` : img.path;
         imgEl.alt = prompt;
-        imgEl.title = `시드: ${img.seed}\n클릭하여 확대`;
+        imgEl.title = `시드: ${img.seed}\n클릭하여 확대 (좌우 화살표로 탐색)`;
         imgEl.dataset.path = img.path;
-        imgEl.onclick = () => showImageModal(img.path, img);
+        imgEl.onclick = () => showImageModalWithList(imageList, index);
         imagesDiv.appendChild(imgEl);
     });
     
     contentDiv.appendChild(imagesDiv);
+    
+    // 이미지가 여러 장일 때 묶음 다운로드 버튼 추가
+    if (images.length > 1) {
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'message-actions';
+        
+        const downloadBtn = document.createElement('button');
+        downloadBtn.className = 'btn btn-sm btn-secondary message-download-btn';
+        downloadBtn.innerHTML = `<i class="ri-download-2-line"></i> ${images.length}장 다운로드`;
+        downloadBtn.title = '이미지를 ZIP 파일로 묶어서 다운로드';
+        downloadBtn.onclick = (e) => {
+            e.stopPropagation();
+            downloadImagesAsZip(images, prompt);
+        };
+        
+        actionsDiv.appendChild(downloadBtn);
+        contentDiv.appendChild(actionsDiv);
+    }
+    
     messageDiv.appendChild(contentDiv);
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -473,12 +498,18 @@ function restoreConversation(conversation) {
             const imagesDiv = document.createElement('div');
             imagesDiv.className = 'message-images';
             
-            msg.images.forEach(imgData => {
+            // 이미지 목록 생성 (네비게이션용)
+            const imageList = msg.images.map(imgData => ({
+                path: imgData.path,
+                metadata: { prompt: imgData.alt, seed: imgData.seed }
+            }));
+            
+            msg.images.forEach((imgData, index) => {
                 const imgEl = document.createElement('img');
                 imgEl.src = imgData.path;
                 imgEl.alt = imgData.alt || '';
                 imgEl.dataset.path = imgData.path;
-                imgEl.onclick = () => showImageModal(imgData.path, { prompt: imgData.alt });
+                imgEl.onclick = () => showImageModalWithList(imageList, index);
                 imagesDiv.appendChild(imgEl);
             });
             
@@ -1206,7 +1237,13 @@ async function loadGallery() {
         const grid = document.getElementById('galleryGrid');
         grid.innerHTML = '';
         
-        result.images.forEach(img => {
+        // 갤러리 이미지 목록 생성 (네비게이션용)
+        const galleryImageList = result.images.map(img => ({
+            path: img.path,
+            metadata: img.metadata
+        }));
+        
+        result.images.forEach((img, index) => {
             const item = document.createElement('div');
             item.className = 'gallery-item';
             item.innerHTML = `
@@ -1215,7 +1252,7 @@ async function loadGallery() {
                     <span>${img.filename}</span>
                 </div>
             `;
-            item.onclick = () => showImageModal(img.path, img.metadata);
+            item.onclick = () => showImageModalWithList(galleryImageList, index);
             grid.appendChild(item);
         });
     } catch (error) {
@@ -1875,7 +1912,7 @@ function switchTab(tabId) {
     if (tabId === 'edit') loadEditQuantizationOptions();
 }
 
-// ============= 이미지 미리보기 (줌/드래그 지원) =============
+// ============= 이미지 미리보기 (줌/드래그/네비게이션 지원) =============
 let imagePreviewState = {
     scale: 1,
     translateX: 0,
@@ -1886,13 +1923,22 @@ let imagePreviewState = {
     lastTranslateX: 0,
     lastTranslateY: 0,
     currentPath: '',
-    fitMode: true
+    fitMode: true,
+    naturalWidth: 0,
+    naturalHeight: 0,
+    // 이미지 목록 네비게이션
+    imageList: [],      // [{path, metadata}, ...]
+    currentIndex: 0
 };
 
+// 단일 이미지 보기 (기존 호환)
 function showImageModal(path, metadata) {
+    showImageModalWithList([{path, metadata}], 0);
+}
+
+// 이미지 목록과 함께 보기 (네비게이션 지원)
+function showImageModalWithList(imageList, startIndex = 0) {
     const modal = document.getElementById('imageModal');
-    const img = document.getElementById('modalImage');
-    const info = document.getElementById('modalInfo');
     const wrapper = document.getElementById('imagePreviewWrapper');
     
     // 상태 초기화
@@ -1905,11 +1951,41 @@ function showImageModal(path, metadata) {
         startY: 0,
         lastTranslateX: 0,
         lastTranslateY: 0,
-        currentPath: path,
+        currentPath: '',
         fitMode: true,
         naturalWidth: 0,
-        naturalHeight: 0
+        naturalHeight: 0,
+        imageList: imageList,
+        currentIndex: startIndex
     };
+    
+    wrapper.classList.add('fit-mode');
+    modal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    
+    // 현재 이미지 표시
+    showCurrentImage();
+    updateNavigationButtons();
+    updateImageCounter();
+}
+
+// 현재 인덱스의 이미지 표시
+function showCurrentImage() {
+    const img = document.getElementById('modalImage');
+    const info = document.getElementById('modalInfo');
+    
+    if (imagePreviewState.imageList.length === 0) return;
+    
+    const current = imagePreviewState.imageList[imagePreviewState.currentIndex];
+    const path = current.path;
+    const metadata = current.metadata;
+    
+    // 줌/이동 상태 초기화
+    imagePreviewState.scale = 1;
+    imagePreviewState.translateX = 0;
+    imagePreviewState.translateY = 0;
+    imagePreviewState.fitMode = true;
+    imagePreviewState.currentPath = path;
     
     // 이미지 로드 후 원본 크기 저장
     img.onload = () => {
@@ -1920,10 +1996,10 @@ function showImageModal(path, metadata) {
     };
     
     img.src = path;
-    wrapper.classList.add('fit-mode');
     updateImageTransform();
     updateZoomLevel();
     
+    // 메타데이터 표시
     if (metadata) {
         let infoText = '';
         if (metadata.prompt) infoText += `📝 프롬프트: ${metadata.prompt}\n`;
@@ -1934,9 +2010,57 @@ function showImageModal(path, metadata) {
     } else {
         info.textContent = '';
     }
+}
+
+// 이전 이미지
+function showPrevImage() {
+    if (imagePreviewState.currentIndex > 0) {
+        imagePreviewState.currentIndex--;
+        showCurrentImage();
+        updateNavigationButtons();
+        updateImageCounter();
+    }
+}
+
+// 다음 이미지
+function showNextImage() {
+    if (imagePreviewState.currentIndex < imagePreviewState.imageList.length - 1) {
+        imagePreviewState.currentIndex++;
+        showCurrentImage();
+        updateNavigationButtons();
+        updateImageCounter();
+    }
+}
+
+// 네비게이션 버튼 상태 업데이트
+function updateNavigationButtons() {
+    const prevBtn = document.getElementById('btnPrevImage');
+    const nextBtn = document.getElementById('btnNextImage');
+    const total = imagePreviewState.imageList.length;
     
-    modal.classList.add('active');
-    document.body.style.overflow = 'hidden';
+    if (total <= 1) {
+        // 이미지가 1개면 버튼 숨김
+        prevBtn.style.display = 'none';
+        nextBtn.style.display = 'none';
+    } else {
+        prevBtn.style.display = 'flex';
+        nextBtn.style.display = 'flex';
+        prevBtn.disabled = imagePreviewState.currentIndex === 0;
+        nextBtn.disabled = imagePreviewState.currentIndex === total - 1;
+    }
+}
+
+// 이미지 카운터 업데이트
+function updateImageCounter() {
+    const counter = document.getElementById('imageCounter');
+    const total = imagePreviewState.imageList.length;
+    
+    if (total <= 1) {
+        counter.classList.remove('visible');
+    } else {
+        counter.innerHTML = `<span class="current">${imagePreviewState.currentIndex + 1}</span> / ${total}`;
+        counter.classList.add('visible');
+    }
 }
 
 function updateImageTransform() {
@@ -2398,6 +2522,16 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btnZoomOriginal').addEventListener('click', zoomToOriginal);
     document.getElementById('btnDownloadImage').addEventListener('click', downloadPreviewImage);
     
+    // 이미지 네비게이션 버튼
+    document.getElementById('btnPrevImage').addEventListener('click', (e) => {
+        e.stopPropagation();
+        showPrevImage();
+    });
+    document.getElementById('btnNextImage').addEventListener('click', (e) => {
+        e.stopPropagation();
+        showNextImage();
+    });
+    
     // 키보드 단축키
     document.addEventListener('keydown', (e) => {
         const modal = document.getElementById('imageModal');
@@ -2419,6 +2553,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
             case '1':
                 zoomToOriginal();
+                break;
+            case 'ArrowLeft':
+                e.preventDefault();
+                showPrevImage();
+                break;
+            case 'ArrowRight':
+                e.preventDefault();
+                showNextImage();
                 break;
         }
     });
@@ -3114,18 +3256,44 @@ function addEditImageMessage(originalSrc, resultImages, prompt) {
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     
-    // 원본 → 결과 비교
-    let html = '<div class="edit-comparison">';
-    html += `<img src="${originalSrc}" alt="원본" title="원본 이미지">`;
-    html += '<span class="edit-arrow"><i class="ri-arrow-right-line"></i></span>';
+    // 이미지 목록 생성 (원본 + 결과들)
+    const imageList = [
+        { path: originalSrc, metadata: { prompt: '원본 이미지' } },
+        ...resultImages.map(img => ({
+            path: img.path,
+            metadata: { prompt: `편집 결과: ${prompt}`, seed: img.seed }
+        }))
+    ];
     
-    resultImages.forEach(img => {
-        html += `<img src="${img.base64 ? 'data:image/png;base64,' + img.base64 : img.path}" alt="결과" title="시드: ${img.seed}" onclick="showImageModal('${img.path}', {prompt: '${escapeHtml(prompt)}', seed: ${img.seed}})">`;
+    // 원본 → 결과 비교
+    const comparisonDiv = document.createElement('div');
+    comparisonDiv.className = 'edit-comparison';
+    
+    // 원본 이미지
+    const originalImg = document.createElement('img');
+    originalImg.src = originalSrc;
+    originalImg.alt = '원본';
+    originalImg.title = '원본 이미지 (클릭하여 확대)';
+    originalImg.onclick = () => showImageModalWithList(imageList, 0);
+    comparisonDiv.appendChild(originalImg);
+    
+    // 화살표
+    const arrow = document.createElement('span');
+    arrow.className = 'edit-arrow';
+    arrow.innerHTML = '<i class="ri-arrow-right-line"></i>';
+    comparisonDiv.appendChild(arrow);
+    
+    // 결과 이미지들
+    resultImages.forEach((img, index) => {
+        const resultImg = document.createElement('img');
+        resultImg.src = img.base64 ? 'data:image/png;base64,' + img.base64 : img.path;
+        resultImg.alt = '결과';
+        resultImg.title = `시드: ${img.seed}\n클릭하여 확대 (좌우 화살표로 탐색)`;
+        resultImg.onclick = () => showImageModalWithList(imageList, index + 1);
+        comparisonDiv.appendChild(resultImg);
     });
     
-    html += '</div>';
-    contentDiv.innerHTML = html;
-    
+    contentDiv.appendChild(comparisonDiv);
     messageDiv.appendChild(contentDiv);
     messagesEl.appendChild(messageDiv);
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -3238,17 +3406,28 @@ async function loadEditHistory() {
                 ${chainBadge}
             `;
             
+            // 이미지 목록 생성 (네비게이션용)
+            const historyImageList = [];
+            if (originalPath) {
+                historyImageList.push({
+                    path: originalPath,
+                    metadata: { prompt: `원본 이미지\n편집 프롬프트: ${entry.prompt}` }
+                });
+            }
+            if (resultPath) {
+                historyImageList.push({
+                    path: resultPath,
+                    metadata: { prompt: `편집 결과\n편집 프롬프트: ${entry.prompt}`, seed: entry.seed }
+                });
+            }
+            
             // 이미지 클릭 이벤트 추가
-            item.querySelectorAll('.edit-history-image-wrapper img').forEach(img => {
+            item.querySelectorAll('.edit-history-image-wrapper img').forEach((img, imgIndex) => {
                 img.style.cursor = 'pointer';
                 img.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    const path = img.dataset.path;
-                    const type = img.dataset.type === 'original' ? '원본 이미지' : '편집 결과';
-                    showImageModal(path, { 
-                        prompt: `${type}\n편집 프롬프트: ${entry.prompt}`,
-                        seed: entry.seed
-                    });
+                    const clickedIndex = img.dataset.type === 'original' ? 0 : (originalPath ? 1 : 0);
+                    showImageModalWithList(historyImageList, clickedIndex);
                 });
             });
             
