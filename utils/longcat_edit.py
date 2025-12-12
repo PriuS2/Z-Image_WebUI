@@ -100,6 +100,7 @@ class LongCatEditManager:
                     
                     filename = quant_info["filename"]
                     gguf_repo = quant_info["repo"]
+                    base_model = LONGCAT_EDIT_MODEL
                     
                     # GGUF 파일 다운로드
                     report_progress(10, "📥 GGUF 모델 다운로드 확인 중...", f"파일: {filename}")
@@ -109,17 +110,18 @@ class LongCatEditManager:
                         filename=filename
                     )
                     
-                    # GGUF Transformer 로드 (FluxTransformer2DModel 사용)
+                    # GGUF Transformer 로드 (원본 모델의 config 사용)
                     report_progress(30, "🔄 GGUF Transformer 로딩 중...", "양자화 모델 로드 중 (시간이 걸릴 수 있습니다)")
                     self.transformer = await asyncio.to_thread(
                         FluxTransformer2DModel.from_single_file,
                         gguf_path,
+                        config=base_model,
+                        subfolder="transformer",
                         quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
                         torch_dtype=torch.bfloat16
                     )
                     
                     # 기본 모델에서 나머지 컴포넌트 로드
-                    base_model = LONGCAT_EDIT_MODEL
                     report_progress(50, "🔄 Text Processor 로딩 중...", f"기본 모델: {base_model}")
                     self.text_processor = await asyncio.to_thread(
                         AutoProcessor.from_pretrained,
