@@ -185,6 +185,45 @@ class LongCatEditManager:
             return f"VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB"
         return "N/A"
     
+    def _hook_progress_bar(self, step_callback):
+        """파이프라인의 progress_bar를 후킹하여 스텝별 콜백 호출"""
+        from tqdm import tqdm
+        import types
+        
+        pipe = self.pipe
+        original_progress_bar = pipe.progress_bar
+        
+        def hooked_progress_bar(*args, **kwargs):
+            # 원래 progress_bar 호출
+            pbar = original_progress_bar(*args, **kwargs)
+            
+            # tqdm의 update 메서드를 후킹
+            original_update = pbar.update
+            
+            def hooked_update(n=1):
+                result = original_update(n)
+                # 스텝 콜백 호출
+                if step_callback and pbar.total:
+                    step_callback(pbar.n, pbar.total)
+                return result
+            
+            pbar.update = hooked_update
+            return pbar
+        
+        # 메서드 바인딩
+        pipe.progress_bar = types.MethodType(
+            lambda self, *args, **kwargs: hooked_progress_bar(*args, **kwargs),
+            pipe
+        )
+        
+        return original_progress_bar
+    
+    def _restore_progress_bar(self, original_progress_bar):
+        """원래 progress_bar 복원"""
+        import types
+        if self.pipe and original_progress_bar:
+            self.pipe.progress_bar = types.MethodType(original_progress_bar, self.pipe)
+    
     async def edit_image(
         self,
         image: Image.Image,
@@ -195,7 +234,7 @@ class LongCatEditManager:
         seed: int = -1,
         num_images: int = 1,
         reference_image: Optional[Image.Image] = None,
-        progress_callback: Optional[Callable[[int, int, int], Any]] = None
+        progress_callback: Optional[Callable[[int, int, int, int], Any]] = None
     ) -> Tuple[bool, list, str]:
         """
         이미지 편집 실행
@@ -209,7 +248,7 @@ class LongCatEditManager:
             seed: 시드 (-1이면 랜덤)
             num_images: 생성할 이미지 수
             reference_image: 참조 이미지 (스타일 참조용)
-            progress_callback: 진행상황 콜백 (current_image, total_images, steps)
+            progress_callback: 진행상황 콜백 (current_image, total_images, current_step, total_steps)
         
         Returns:
             (success, images, message)
@@ -236,26 +275,46 @@ class LongCatEditManager:
                 if i > 0:
                     generator = torch.Generator("cpu").manual_seed(current_seed)
                 
-                # 이미지 시작 시 진행 상황 콜백
-                if progress_callback:
-                    if asyncio.iscoroutinefunction(progress_callback):
-                        await progress_callback(i + 1, num_images, num_inference_steps)
-                    else:
-                        progress_callback(i + 1, num_images, num_inference_steps)
+                # 스텝 콜백을 위한 상태 저장
+                current_image_idx = i
+                total_images = num_images
                 
-                # 편집 실행
-                def run_edit():
-                    return self.pipe(
-                        image,
-                        prompt,
-                        negative_prompt=negative_prompt,
-                        guidance_scale=guidance_scale,
-                        num_inference_steps=num_inference_steps,
-                        num_images_per_prompt=1,
-                        generator=generator
-                    ).images[0]
+                # 스텝별 콜백 함수
+                def step_callback(current_step, total_steps):
+                    if progress_callback:
+                        # sync 콜백 호출 (별도 스레드에서 실행되므로)
+                        try:
+                            # 이벤트 루프가 있으면 asyncio로 실행
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                asyncio.run_coroutine_threadsafe(
+                                    progress_callback(current_image_idx + 1, total_images, current_step, total_steps),
+                                    loop
+                                )
+                        except RuntimeError:
+                            pass  # 이벤트 루프가 없으면 무시
                 
-                result_image = await asyncio.to_thread(run_edit)
+                # progress_bar 후킹
+                original_progress_bar = self._hook_progress_bar(step_callback)
+                
+                try:
+                    # 편집 실행
+                    def run_edit():
+                        return self.pipe(
+                            image,
+                            prompt,
+                            negative_prompt=negative_prompt,
+                            guidance_scale=guidance_scale,
+                            num_inference_steps=num_inference_steps,
+                            num_images_per_prompt=1,
+                            generator=generator
+                        ).images[0]
+                    
+                    result_image = await asyncio.to_thread(run_edit)
+                finally:
+                    # progress_bar 복원
+                    self._restore_progress_bar(original_progress_bar)
+                
                 results.append({
                     "image": result_image,
                     "seed": current_seed

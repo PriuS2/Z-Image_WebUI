@@ -1619,15 +1619,18 @@ async def edit_image(
         })
         
         # 진행 상황 콜백 정의
-        async def edit_progress_callback(current_image: int, total_images: int, steps: int):
-            # 전체 진행률 계산 (이미지 기준)
-            overall_progress = int((current_image - 1) / total_images * 100)
+        async def edit_progress_callback(current_image: int, total_images: int, current_step: int, total_steps: int):
+            # 전체 진행률 계산 (이미지 + 스텝 기준)
+            image_progress = (current_image - 1) / total_images
+            step_progress = current_step / total_steps / total_images
+            overall_progress = int((image_progress + step_progress) * 100)
             
             await ws_manager.send_to_session(session.session_id, {
                 "type": "edit_progress",
                 "current_image": current_image,
                 "total_images": total_images,
-                "steps": steps,
+                "current_step": current_step,
+                "total_steps": total_steps,
                 "progress": overall_progress
             })
         

@@ -163,13 +163,13 @@ function handleWebSocketMessage(data) {
 
 // ============= 편집 진행 상황 처리 =============
 function handleEditProgress(data) {
-    const { current_image, total_images, steps, progress } = data;
+    const { current_image, total_images, current_step, total_steps, progress } = data;
     
     let label;
     if (total_images > 1) {
-        label = `이미지 ${current_image}/${total_images} 편집 중... (${steps} steps)`;
+        label = `이미지 ${current_image}/${total_images} - 스텝 ${current_step}/${total_steps}`;
     } else {
-        label = `편집 중... (${steps} steps)`;
+        label = `스텝 ${current_step}/${total_steps}`;
     }
     
     showEditProgress(label, progress);
