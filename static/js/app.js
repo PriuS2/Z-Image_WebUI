@@ -673,26 +673,30 @@ async function loadModel(fromChat = false) {
         addMessage('system', '⚠️ 이미 모델 로딩 중입니다.');
         return;
     }
-    
+
     const quantization = fromChat
         ? document.getElementById('chatQuantizationSelect')?.value || "BF16 (기본, 최고품질)"
         : document.getElementById('quantizationSelect')?.value || "BF16 (기본, 최고품질)";
     const modelPath = document.getElementById('modelPathInput')?.value || '';
-    
-    const cpuOffload = fromChat 
+
+    const cpuOffload = fromChat
         ? document.getElementById('chatCpuOffloadCheck')?.checked || false
         : document.getElementById('cpuOffloadCheck')?.checked || false;
-    
+
+    // GPU 선택 (설정탭에서만 가져옴)
+    const gpuIndex = parseInt(document.getElementById('gpuSelect')?.value || '0');
+
     try {
         setModelLoadingState(true);
         const offloadMsg = cpuOffload ? ' (CPU 오프로딩 사용)' : '';
-        addMessage('system', `🔄 모델 로딩을 시작합니다...${offloadMsg}`);
+        addMessage('system', `🔄 모델 로딩을 시작합니다... (GPU ${gpuIndex}${offloadMsg})`);
         showProgress('모델 로딩 준비 중...', 5);
-        
+
         await apiCall('/model/load', 'POST', {
             quantization,
             model_path: modelPath,
-            cpu_offload: cpuOffload
+            cpu_offload: cpuOffload,
+            gpu_index: gpuIndex
         });
         
         updateModelStatus();
@@ -1162,6 +1166,60 @@ async function loadQuantizationOptions() {
         console.error('양자화 옵션 로드 실패:', error);
     }
 }
+
+
+// ============= GPU 목록 로드 (멀티 GPU 지원) =============
+async function loadGpuList() {
+    try {
+        const result = await apiCall('/gpus');
+        
+        const gpuSelects = [
+            document.getElementById('gpuSelect'),           // 생성 모델 - 설정탭
+            document.getElementById('editGpuSelect'),       // 편집 모델 - 설정탭
+            document.getElementById('editGpuSelectChat')    // 편집 모델 - 편집탭
+        ];
+        
+        if (result.gpus && result.gpus.length > 0) {
+            gpuSelects.forEach((select, idx) => {
+                if (!select) return;
+                
+                select.innerHTML = '';
+                
+                result.gpus.forEach(gpu => {
+                    const opt = document.createElement('option');
+                    opt.value = gpu.index;
+                    opt.textContent = `GPU ${gpu.index}: ${gpu.name} (${gpu.total_memory_gb}GB)`;
+                    opt.title = `${gpu.name} - ${gpu.total_memory_gb}GB VRAM`;
+                    select.appendChild(opt);
+                });
+                
+                // 기본값 설정
+                if (idx === 0) {
+                    // 생성 모델: 기본 GPU 0
+                    select.value = result.default_generation_gpu || 0;
+                } else {
+                    // 편집 모델: 기본 GPU 1 (없으면 0)
+                    const editDefault = result.gpus.length > 1 ? (result.default_edit_gpu || 1) : 0;
+                    select.value = editDefault;
+                }
+            });
+            
+            console.log(`GPU 목록 로드 완료: ${result.count}개 GPU`);
+            
+            // 단일 GPU인 경우 힌트 메시지 표시
+            if (result.count === 1) {
+                addMessage('system', '💡 단일 GPU 환경입니다. 생성/편집 모델은 동시에 로드할 수 없습니다.');
+            } else {
+                addMessage('system', `🎮 ${result.count}개의 GPU를 감지했습니다. 생성/편집 모델을 다른 GPU에 로드하면 동시 사용 가능합니다.`);
+            }
+        } else {
+            console.log('GPU를 찾을 수 없거나 CPU 모드입니다.');
+        }
+    } catch (error) {
+        console.error('GPU 목록 로드 실패:', error);
+    }
+}
+
 
 async function updateModelDownloadStatus() {
     try {
@@ -1925,6 +1983,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateModelStatus();
     loadTemplates();
     loadQuantizationOptions();
+    loadGpuList();  // GPU 목록 로드
     loadLlmProviders();
     loadAutoUnloadSettings();
     
@@ -2094,14 +2153,29 @@ document.addEventListener('DOMContentLoaded', () => {
         btnLoadEditModelSettings.addEventListener('click', async () => {
             const quant = document.getElementById('editQuantizationSelectSettings')?.value || "BF16 (기본, 최고품질)";
             const cpuOffload = document.getElementById('editCpuOffloadCheckSettings')?.checked ?? true;
-            
+            const gpuIndex = document.getElementById('editGpuSelect')?.value || '1';
+
             // 편집 탭의 설정과 동기화
             const editQuantSelect = document.getElementById('editQuantizationSelect');
             const editCpuCheck = document.getElementById('editCpuOffloadCheck');
+            const editGpuChat = document.getElementById('editGpuSelectChat');
             if (editQuantSelect) editQuantSelect.value = quant;
             if (editCpuCheck) editCpuCheck.checked = cpuOffload;
-            
+            if (editGpuChat) editGpuChat.value = gpuIndex;
+
             await loadEditModel();
+        });
+    }
+    
+    // 편집 모델 GPU 선택 동기화 (설정탭 <-> 편집탭)
+    const editGpuSelect = document.getElementById('editGpuSelect');
+    const editGpuSelectChat = document.getElementById('editGpuSelectChat');
+    if (editGpuSelect && editGpuSelectChat) {
+        editGpuSelect.addEventListener('change', () => {
+            editGpuSelectChat.value = editGpuSelect.value;
+        });
+        editGpuSelectChat.addEventListener('change', () => {
+            editGpuSelect.value = editGpuSelectChat.value;
         });
     }
     if (btnUnloadEditModelSettings) {
@@ -2409,22 +2483,30 @@ async function loadEditModel() {
         addEditMessage('system', '⚠️ 이미 모델 로딩 중입니다.');
         return;
     }
-    
+
     const quantization = document.getElementById('editQuantizationSelect')?.value || "BF16 (기본, 최고품질)";
     const cpuOffload = document.getElementById('editCpuOffloadCheck')?.checked ?? true;
     
+    // GPU 선택 (편집탭 또는 설정탭에서 가져옴)
+    const gpuIndex = parseInt(
+        document.getElementById('editGpuSelectChat')?.value || 
+        document.getElementById('editGpuSelect')?.value || 
+        '1'
+    );
+
     try {
         setEditModelLoadingState(true);
-        addEditMessage('system', '🔄 편집 모델 로딩을 시작합니다...');
+        addEditMessage('system', `🔄 편집 모델 로딩을 시작합니다... (GPU ${gpuIndex})`);
         showEditProgress('모델 로딩 준비 중...', 5);
-        
+
         await apiCall('/edit/model/load', 'POST', {
             quantization,
-            cpu_offload: cpuOffload
+            cpu_offload: cpuOffload,
+            gpu_index: gpuIndex
         });
-        
+
         updateEditModelStatus();
-        
+
     } catch (error) {
         addEditMessage('system', `❌ 모델 로드 실패: ${error.message}`, 'error');
         hideEditProgress();

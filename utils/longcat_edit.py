@@ -11,6 +11,7 @@ from config.defaults import (
     LONGCAT_EDIT_MODEL,
     EDIT_QUANTIZATION_OPTIONS,
     DEFAULT_EDIT_SETTINGS,
+    EDIT_GPU_INDEX,
 )
 from utils.llm_client import llm_client
 
@@ -48,6 +49,7 @@ class LongCatEditManager:
         self.text_processor = None
         self.current_model: Optional[str] = None
         self.device: Optional[str] = None
+        self.gpu_index: int = EDIT_GPU_INDEX
         self._lock = asyncio.Lock()
     
     @property
@@ -55,10 +57,15 @@ class LongCatEditManager:
         """모델 로드 여부"""
         return self.pipe is not None
     
-    def get_device(self) -> str:
-        """사용 가능한 디바이스 반환"""
+    def get_device(self, gpu_index: Optional[int] = None) -> str:
+        """사용 가능한 디바이스 반환 (멀티 GPU 지원)"""
+        if gpu_index is None:
+            gpu_index = self.gpu_index
         if torch.cuda.is_available():
-            return "cuda"
+            gpu_count = torch.cuda.device_count()
+            if gpu_index >= gpu_count:
+                gpu_index = 0  # 유효하지 않으면 0으로 폴백
+            return f"cuda:{gpu_index}"
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
         return "cpu"
@@ -68,6 +75,7 @@ class LongCatEditManager:
         quantization: str = "BF16 (기본, 최고품질)",
         cpu_offload: bool = True,
         model_path: Optional[str] = None,
+        gpu_index: Optional[int] = None,
         progress_callback: Optional[Callable[[int, str, str], Any]] = None
     ) -> Tuple[bool, str]:
         """
@@ -77,6 +85,7 @@ class LongCatEditManager:
             quantization: 양자화 옵션
             cpu_offload: CPU 오프로딩 사용 여부 (VRAM 절약)
             model_path: 커스텀 모델 경로
+            gpu_index: 사용할 GPU 인덱스 (None이면 기본값 사용)
             progress_callback: 진행상황 콜백 (percent, label, detail)
         
         Returns:
@@ -87,7 +96,16 @@ class LongCatEditManager:
                 return False, "모델이 이미 로드되어 있습니다. 먼저 언로드하세요."
             
             try:
-                self.device = self.get_device()
+                # GPU 인덱스 설정
+                if gpu_index is not None:
+                    self.gpu_index = gpu_index
+                
+                # GPU 인덱스 유효성 검사
+                gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+                if gpu_count > 0 and self.gpu_index >= gpu_count:
+                    self.gpu_index = 0  # 유효하지 않으면 0으로 폴백
+                
+                self.device = self.get_device(self.gpu_index)
                 quant_info = EDIT_QUANTIZATION_OPTIONS.get(quantization)
                 
                 if not quant_info:
@@ -147,11 +165,13 @@ class LongCatEditManager:
                 )
                 
                 # 디바이스 설정
-                report_progress(85, f"🚀 {self.device.upper()}로 모델 전송 중...", "")
+                gpu_name = torch.cuda.get_device_properties(self.gpu_index).name if torch.cuda.is_available() else "N/A"
+                report_progress(85, f"🚀 GPU{self.gpu_index} ({gpu_name})로 모델 전송 중...", "")
                 
                 if cpu_offload:
-                    await asyncio.to_thread(self.pipe.enable_model_cpu_offload)
-                    report_progress(95, "⚙️ CPU 오프로딩 설정됨", "VRAM 부족 시 RAM 사용")
+                    # CPU 오프로딩 시에도 특정 GPU 사용
+                    await asyncio.to_thread(self.pipe.enable_model_cpu_offload, gpu_id=self.gpu_index)
+                    report_progress(95, "⚙️ CPU 오프로딩 설정됨", f"GPU{self.gpu_index} 사용, VRAM 부족 시 RAM 사용")
                 else:
                     await asyncio.to_thread(self.pipe.to, self.device, torch.bfloat16)
                 
@@ -203,11 +223,12 @@ class LongCatEditManager:
         gc.collect()
     
     def _get_vram_info(self) -> str:
-        """VRAM 사용량 정보"""
+        """현재 GPU의 VRAM 사용량 정보"""
         if torch.cuda.is_available():
-            vram_used = torch.cuda.memory_allocated() / 1024**3
-            vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            return f"VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB"
+            gpu_idx = self.gpu_index
+            vram_used = torch.cuda.memory_allocated(gpu_idx) / 1024**3
+            vram_total = torch.cuda.get_device_properties(gpu_idx).total_memory / 1024**3
+            return f"GPU{gpu_idx} VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB"
         return "N/A"
     
     def _hook_progress_bar(self, step_callback):

@@ -24,6 +24,12 @@ GGUF_MODEL_REPO=jayn7/Z-Image-Turbo-GGUF
 LONGCAT_EDIT_MODEL=meituan-longcat/LongCat-Image-Edit
 LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT=10
 
+# ===== GPU Settings (Multi-GPU Support) =====
+# GPU index for generation model (default: 0)
+GENERATION_GPU_INDEX=0
+# GPU index for edit model (default: 1, or 0 if single GPU)
+EDIT_GPU_INDEX=1
+
 # ===== LLM Settings =====
 # Provider: openai, groq, openrouter, together, ollama, lmstudio, custom
 LLM_PROVIDER=openai
@@ -78,6 +84,10 @@ GGUF_MODEL_REPO = os.getenv("GGUF_MODEL_REPO", "jayn7/Z-Image-Turbo-GGUF")
 # ===== LongCat-Image-Edit 모델 설정 =====
 LONGCAT_EDIT_MODEL = os.getenv("LONGCAT_EDIT_MODEL", "meituan-longcat/LongCat-Image-Edit")
 LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT = int(os.getenv("LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT", "10"))
+
+# ===== GPU 설정 (멀티 GPU 지원) =====
+GENERATION_GPU_INDEX = int(os.getenv("GENERATION_GPU_INDEX", "0"))
+EDIT_GPU_INDEX = int(os.getenv("EDIT_GPU_INDEX", "1"))
 
 # ===== LLM 설정 (환경변수 우선) =====
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")  # 빈 문자열이면 settings.yaml 사용

@@ -39,6 +39,8 @@ from config.defaults import (
     SERVER_PORT,
     SERVER_RELOAD,
     LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT,
+    GENERATION_GPU_INDEX,
+    EDIT_GPU_INDEX,
 )
 from config.templates import PROMPT_TEMPLATES
 from utils.settings import settings
@@ -194,6 +196,7 @@ class ModelLoadRequest(BaseModel):
     quantization: str = "BF16 (기본, 최고품질)"
     model_path: str = ""
     cpu_offload: bool = False
+    gpu_index: int = GENERATION_GPU_INDEX  # 사용할 GPU 인덱스
 
 
 class SettingsRequest(BaseModel):
@@ -237,6 +240,7 @@ class EditModelLoadRequest(BaseModel):
     quantization: str = "BF16 (기본, 최고품질)"
     model_path: str = ""
     cpu_offload: bool = True  # 기본 활성화 (VRAM 절약)
+    gpu_index: int = EDIT_GPU_INDEX  # 사용할 GPU 인덱스
 
 
 class EditGenerateRequest(BaseModel):
@@ -267,13 +271,31 @@ class EditConversationUpdateRequest(BaseModel):
 
 
 # ============= 유틸리티 함수 =============
-def get_device():
-    """사용 가능한 디바이스 반환"""
+def get_device(gpu_index: int = 0):
+    """사용 가능한 디바이스 반환 (멀티 GPU 지원)"""
     if torch.cuda.is_available():
-        return "cuda"
+        gpu_count = torch.cuda.device_count()
+        if gpu_index >= gpu_count:
+            gpu_index = 0  # 유효하지 않은 인덱스면 0으로 폴백
+        return f"cuda:{gpu_index}"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def get_gpu_list():
+    """사용 가능한 GPU 목록 반환"""
+    gpus = []
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            gpus.append({
+                "index": i,
+                "name": props.name,
+                "total_memory_gb": round(props.total_memory / 1024**3, 1),
+                "device": f"cuda:{i}"
+            })
+    return gpus
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -283,12 +305,27 @@ def image_to_base64(image: Image.Image) -> str:
     return base64.b64encode(buffer.getvalue()).decode()
 
 
-def get_vram_info() -> str:
-    """VRAM 사용량 정보"""
+def get_vram_info(gpu_index: int = 0) -> str:
+    """특정 GPU의 VRAM 사용량 정보"""
     if torch.cuda.is_available():
-        vram_used = torch.cuda.memory_allocated() / 1024**3
-        vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        gpu_count = torch.cuda.device_count()
+        if gpu_index >= gpu_count:
+            gpu_index = 0
+        vram_used = torch.cuda.memory_allocated(gpu_index) / 1024**3
+        vram_total = torch.cuda.get_device_properties(gpu_index).total_memory / 1024**3
         return f"{vram_used:.1f}GB / {vram_total:.1f}GB"
+    return "N/A"
+
+
+def get_all_vram_info() -> str:
+    """모든 GPU의 VRAM 사용량 정보"""
+    if torch.cuda.is_available():
+        infos = []
+        for i in range(torch.cuda.device_count()):
+            vram_used = torch.cuda.memory_allocated(i) / 1024**3
+            vram_total = torch.cuda.get_device_properties(i).total_memory / 1024**3
+            infos.append(f"GPU{i}: {vram_used:.1f}/{vram_total:.1f}GB")
+        return " | ".join(infos)
     return "N/A"
 
 
@@ -607,6 +644,18 @@ async def home(request: Request):
     return response
 
 
+@app.get("/api/gpus")
+async def get_gpus():
+    """사용 가능한 GPU 목록"""
+    gpus = get_gpu_list()
+    return {
+        "gpus": gpus,
+        "count": len(gpus),
+        "default_generation_gpu": GENERATION_GPU_INDEX,
+        "default_edit_gpu": EDIT_GPU_INDEX,
+    }
+
+
 @app.get("/api/status")
 async def get_status(request: Request):
     """시스템 상태"""
@@ -640,7 +689,13 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
         raise HTTPException(409, "다른 사용자가 모델을 로드/언로드 중입니다. 잠시 후 다시 시도해주세요.")
     
     async with model_lock:
-        device = get_device()
+        # GPU 인덱스 유효성 검사
+        gpu_index = model_request.gpu_index
+        gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if gpu_count > 0 and gpu_index >= gpu_count:
+            gpu_index = 0  # 유효하지 않으면 0으로 폴백
+        
+        device = get_device(gpu_index)
         quant_info = QUANTIZATION_OPTIONS.get(model_request.quantization)
         
         if not quant_info:
@@ -652,11 +707,12 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
         
         try:
             # 1단계: 로딩 준비
+            gpu_name = torch.cuda.get_device_properties(gpu_index).name if gpu_count > 0 else "N/A"
             await ws_manager.broadcast({
                 "type": "model_progress", 
                 "progress": 5, 
                 "label": "🔧 모델 초기화 중...",
-                "detail": f"양자화: {dtype}, 디바이스: {device}",
+                "detail": f"양자화: {dtype}, GPU{gpu_index}: {gpu_name}",
                 "stage": "init"
             })
             await asyncio.sleep(0.1)
@@ -763,12 +819,13 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             await asyncio.sleep(0.1)
             
             if model_request.cpu_offload:
-                await asyncio.to_thread(pipe.enable_model_cpu_offload)
+                # CPU 오프로딩 시에도 특정 GPU 사용
+                await asyncio.to_thread(pipe.enable_model_cpu_offload, gpu_id=gpu_index)
                 await ws_manager.broadcast({
                     "type": "model_progress", 
                     "progress": 95, 
                     "label": "⚙️ CPU 오프로딩 설정 중...",
-                    "detail": "VRAM 부족 시 자동으로 RAM 사용",
+                    "detail": f"GPU{gpu_index} 사용, VRAM 부족 시 RAM 자동 사용",
                     "stage": "cpu_offload"
                 })
             else:
@@ -781,7 +838,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
                 "type": "model_progress", 
                 "progress": 100, 
                 "label": "✅ 모델 로드 완료!",
-                "detail": f"VRAM 사용량: {get_vram_info()}",
+                "detail": f"GPU{gpu_index} VRAM: {get_vram_info(gpu_index)}",
                 "stage": "complete"
             })
             
@@ -1473,11 +1530,19 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
             })
         
         try:
+            # GPU 인덱스 유효성 검사
+            gpu_index = model_request.gpu_index
+            gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            if gpu_count > 0 and gpu_index >= gpu_count:
+                gpu_index = 0  # 유효하지 않으면 0으로 폴백
+            
+            gpu_name = torch.cuda.get_device_properties(gpu_index).name if gpu_count > 0 else "N/A"
+            
             await ws_manager.broadcast({
                 "type": "edit_model_progress",
                 "progress": 0,
                 "label": "🔧 편집 모델 로드 시작...",
-                "detail": "",
+                "detail": f"GPU{gpu_index}: {gpu_name}",
                 "stage": "init"
             })
             
@@ -1485,6 +1550,7 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 quantization=model_request.quantization,
                 cpu_offload=model_request.cpu_offload,
                 model_path=model_request.model_path if model_request.model_path else None,
+                gpu_index=gpu_index,
                 progress_callback=progress_callback
             )
             
