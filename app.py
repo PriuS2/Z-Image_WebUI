@@ -118,8 +118,9 @@ async def auto_unload_checker():
                 pipe = None
                 current_model = None
                 
-                # GPU 캐시 정리
-                gpu_monitor.clear_cache()
+                # GPU 캐시 정리 (생성 모델이 올려져 있던 디바이스만 정리)
+                # - 편집 모델이 다른 GPU에 올라간 경우까지 영향을 주지 않도록 범위를 제한한다.
+                gpu_monitor.clear_cache(device)
                 gc.collect()
                 
                 # 클라이언트에게 알림
@@ -1145,8 +1146,8 @@ async def unload_model(request: Request):
                 "detail": ""
             })
             
-            # GPU 캐시 정리
-            gpu_monitor.clear_cache()
+            # GPU 캐시 정리 (생성 모델 디바이스만 정리)
+            gpu_monitor.clear_cache(device)
             gc.collect()
             
             await ws_manager.broadcast({

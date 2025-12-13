@@ -2115,9 +2115,6 @@ async function loadLlmProviders() {
         const modelInput = document.getElementById('llmModelInput');
         if (modelInput) modelInput.value = currentModel;
         
-        const chatModelInput = document.getElementById('chatLlmModelInput');
-        if (chatModelInput) chatModelInput.value = currentModel;
-        
         updateLlmModelList(currentProvider, currentModel);
         
         updateLlmBaseUrlVisibility(currentProvider);
@@ -2201,32 +2198,6 @@ function updateLlmModelList(providerId, currentModel = '') {
     }
 }
 
-async function saveChatLlmSettings() {
-    if (!isAdmin) return;  // 관리자만 저장 가능
-    
-    const model = document.getElementById('chatLlmModelInput')?.value?.trim() || '';
-    
-    const provider = document.getElementById('llmProviderSelect')?.value || currentLlmProviderId || 'openai';
-    currentLlmProviderId = provider;
-    
-    try {
-        await apiCall('/settings', 'POST', {
-            llm_model: model
-        });
-        
-        const settingsProviderSelect = document.getElementById('llmProviderSelect');
-        if (settingsProviderSelect) settingsProviderSelect.value = provider;
-        const settingsModelInput = document.getElementById('llmModelInput');
-        if (settingsModelInput) settingsModelInput.value = model;
-        updateLlmModelList(provider, model);
-        updateLlmBaseUrlVisibility(provider);
-        
-        addMessage('system', `✅ LLM: ${llmProviders[provider]?.name || provider}${model ? ' / ' + model : ''}`);
-    } catch (error) {
-        console.error('LLM 설정 저장 실패:', error);
-    }
-}
-
 function updateLlmBaseUrlVisibility(providerId) {
     const baseUrlGroup = document.getElementById('llmBaseUrlGroup');
     const apiKeyInput = document.getElementById('llmApiKeyInput');
@@ -2273,9 +2244,6 @@ async function saveLlmSettings() {
             llm_base_url: baseUrl,
             llm_model: model
         });
-        
-        const chatModelInput = document.getElementById('chatLlmModelInput');
-        if (chatModelInput) chatModelInput.value = model;
         currentLlmProviderId = provider;
         updateLlmModelList(provider, model);
         
@@ -3070,13 +3038,6 @@ document.addEventListener('DOMContentLoaded', () => {
             currentLlmProviderId = e.target.value;
             updateLlmModelList(e.target.value);
             updateLlmBaseUrlVisibility(e.target.value);
-        });
-    }
-    
-    const chatLlmModelInput = document.getElementById('chatLlmModelInput');
-    if (chatLlmModelInput) {
-        chatLlmModelInput.addEventListener('change', () => {
-            if (isAdmin) saveChatLlmSettings();
         });
     }
     
