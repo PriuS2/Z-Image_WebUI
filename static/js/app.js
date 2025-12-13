@@ -3629,6 +3629,11 @@ async function loadEditModel() {
     const cpuOffload = document.getElementById('editCpuOffloadCheckSettings')?.checked ?? true;
     
     try {
+        // 관리자가 편집 모델을 로드하는 경우, 현재 선택값을 먼저 서버 설정에 저장해둔다.
+        // (새로고침/재시작 후에도 동일 설정이 유지되도록 보장)
+        if (isAdmin) {
+            await saveModelSettings();
+        }
         setEditModelLoadingState(true);
         addEditMessage('system', '🔄 편집 모델 로딩을 시작합니다...');
         showEditProgress('모델 로딩 준비 중...', 5);
@@ -4182,6 +4187,7 @@ async function loadEditQuantizationOptions() {
     try {
         const result = await apiCall('/edit/status');
         const settingsSelect = document.getElementById('editQuantizationSelectSettings');
+        const editCpuOffloadCheckSettings = document.getElementById('editCpuOffloadCheckSettings');
         
         if (result.quantization_options && settingsSelect) {
             settingsSelect.innerHTML = '';
@@ -4193,10 +4199,18 @@ async function loadEditQuantizationOptions() {
             });
         }
 
-        // /settings에서 먼저 내려온 편집 양자화 설정값이 있으면 반영
-        if (settingsSelect && pendingEditQuantizationValue && Array.from(settingsSelect.options).some(o => o.value === pendingEditQuantizationValue)) {
-            settingsSelect.value = pendingEditQuantizationValue;
-            pendingEditQuantizationValue = null;
+        // 저장된 편집 모델 설정값 반영
+        // - 우선순위: /settings에서 내려온 값(pending) > /edit/status에서 내려온 저장값
+        if (settingsSelect) {
+            const desiredQuant = pendingEditQuantizationValue || result?.saved_edit_quantization;
+            if (desiredQuant && Array.from(settingsSelect.options).some(o => o.value === desiredQuant)) {
+                settingsSelect.value = desiredQuant;
+                if (pendingEditQuantizationValue) pendingEditQuantizationValue = null;
+            }
+        }
+
+        if (editCpuOffloadCheckSettings && typeof result?.saved_edit_cpu_offload === 'boolean') {
+            editCpuOffloadCheckSettings.checked = result.saved_edit_cpu_offload;
         }
         
         updateEditModelStatusFromData(result);

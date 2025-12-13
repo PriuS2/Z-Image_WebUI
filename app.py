@@ -2081,6 +2081,9 @@ async def get_edit_status(request: Request):
         "current_model": longcat_edit_manager.current_model,
         "current_quantization": longcat_edit_manager.current_quantization,
         "cpu_offload_enabled": longcat_edit_manager.cpu_offload_enabled,
+        # 저장된(기본) 편집 모델 설정값 - 새로고침/재시작 후 UI에서 유지되도록 제공
+        "saved_edit_quantization": settings.get("edit_quantization", "BF16 (기본, 최고품질)"),
+        "saved_edit_cpu_offload": settings.get("edit_cpu_offload", True),
         "device": longcat_edit_manager.device or longcat_edit_manager.get_device(),
         "vram": get_vram_info(),
         "session_id": session.data_id,
