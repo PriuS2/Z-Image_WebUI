@@ -3041,6 +3041,8 @@ document.addEventListener('DOMContentLoaded', () => {
     updateModelStatus();
     loadTemplates();
     loadQuantizationOptions();
+    // 설정 탭에서도 편집 모델 양자화 옵션을 로드하여 저장값을 즉시 반영
+    loadEditQuantizationOptions();
     loadLlmProviders();
     loadAutoUnloadSettings();
     
@@ -3675,16 +3677,34 @@ async function unloadEditModel() {
 function setEditModelLoadingState(loading) {
     isEditModelLoading = loading;
     
-    const btnLoad = document.getElementById('btnEditLoadModel');
-    const btnUnload = document.getElementById('btnEditUnloadModel');
+    const loadButtons = [
+        document.getElementById('btnEditLoadModel'),
+        document.getElementById('btnLoadEditModelSettings')
+    ];
+    const unloadButtons = [
+        document.getElementById('btnEditUnloadModel'),
+        document.getElementById('btnUnloadEditModelSettings')
+    ];
     
-    if (btnLoad) {
-        btnLoad.disabled = loading;
-        btnLoad.innerHTML = loading ? '<i class="ri-loader-4-line"></i> 로딩...' : '<i class="ri-download-line"></i> 로드';
-    }
-    if (btnUnload) {
-        btnUnload.disabled = loading;
-    }
+    loadButtons.forEach(btn => {
+        if (!btn) return;
+        btn.disabled = loading;
+        
+        // 버튼별 원래 라벨 유지
+        if (loading) {
+            btn.innerHTML = '<i class="ri-loader-4-line"></i> 로딩...';
+        } else {
+            if (btn.id === 'btnLoadEditModelSettings') {
+                btn.innerHTML = '<i class="ri-download-line"></i> 편집 모델 로드';
+            } else {
+                btn.innerHTML = '<i class="ri-download-line"></i> 로드';
+            }
+        }
+    });
+    
+    unloadButtons.forEach(btn => {
+        if (btn) btn.disabled = loading;
+    });
     
     const statusBadge = document.getElementById('editModelStatusBadge');
     if (statusBadge && loading) {
