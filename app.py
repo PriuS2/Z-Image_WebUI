@@ -331,16 +331,31 @@ def get_vram_info() -> str:
     return gpu_monitor.get_vram_summary()
 
 
-async def get_session_from_request(request: Request) -> SessionInfo:
-    """요청에서 세션 가져오기 또는 생성"""
+async def get_session_from_request(request: Request, create_if_missing: bool = False) -> Optional[SessionInfo]:
+    """
+    요청에서 세션 가져오기
+    - 기본: **비로그인(쿠키 없음/유효하지 않음/메모리에 없음)에서는 세션을 생성하지 않음**
+    - 로그인/회원가입 등 일부 엔드포인트에서만 create_if_missing=True로 세션 생성
+    """
     session_id = request.cookies.get(SessionManager.COOKIE_NAME)
-    session = await session_manager.get_or_create_session(session_id)
-    return session
+
+    # 쿠키가 있고 메모리에 살아있는 세션이면 반환
+    if session_id and session_manager.validate_session_id(session_id):
+        session = session_manager.get_session(session_id)
+        if session:
+            session.update_activity()
+            return session
+
+    # 필요한 경우에만 새 세션 생성
+    if create_if_missing:
+        return await session_manager.get_or_create_session(session_id)
+
+    return None
 
 
-def require_auth(session: SessionInfo) -> None:
+def require_auth(session: Optional[SessionInfo]) -> None:
     """인증 필수 체크 - 로그인하지 않으면 예외 발생"""
-    if not session.is_authenticated:
+    if not session or not session.is_authenticated:
         raise HTTPException(401, "로그인이 필요합니다.")
 
 
@@ -351,8 +366,10 @@ def require_admin(request: Request) -> None:
         raise HTTPException(403, "관리자 권한이 필요합니다.")
 
 
-def set_session_cookie(response: Response, session: SessionInfo):
+def set_session_cookie(response: Response, session: Optional[SessionInfo]):
     """응답에 세션 쿠키 설정"""
+    if not session:
+        return
     response.set_cookie(
         key=SessionManager.COOKIE_NAME,
         value=session.session_id,
@@ -360,6 +377,11 @@ def set_session_cookie(response: Response, session: SessionInfo):
         httponly=True,
         samesite="lax"
     )
+
+
+def clear_session_cookie(response: Response):
+    """세션 쿠키 제거"""
+    response.delete_cookie(key=SessionManager.COOKIE_NAME)
 
 
 # ============= 웹소켓 연결 관리 (세션별) =============
@@ -469,6 +491,7 @@ async def execute_generation(request_data: dict) -> dict:
     global pipe, current_model
     
     session_id = request_data.get("session_id")
+    # 계정 단위(data_id)로 실행 시 SessionInfo가 없을 수 있으므로 옵션 처리
     session = session_manager.get_session(session_id)
     
     if pipe is None:
@@ -518,7 +541,11 @@ async def execute_generation(request_data: dict) -> dict:
     if session:
         outputs_dir = session.get_outputs_dir()
     else:
-        outputs_dir = OUTPUTS_DIR
+        # session_id가 user_{id} 형태면 outputs/user_{id}에 저장
+        if isinstance(session_id, str) and session_id.startswith("user_"):
+            outputs_dir = OUTPUTS_DIR / session_id
+        else:
+            outputs_dir = OUTPUTS_DIR
     
     images = []
     for i in range(num_images):
@@ -642,7 +669,11 @@ async def execute_generation(request_data: dict) -> dict:
             "base64": image_to_base64(image),
             "filename": filename,
             "seed": current_seed,
-            "path": f"/outputs/{session.data_id}/{filename}" if session else f"/outputs/{filename}"
+            "path": (
+                f"/outputs/{session.data_id}/{filename}"
+                if session
+                else (f"/outputs/{session_id}/{filename}" if isinstance(session_id, str) and session_id.startswith("user_") else f"/outputs/{filename}")
+            )
         })
         
         # 각 이미지 생성 후 메모리 정리 (여러 장 생성 시 OOM 방지)
@@ -659,8 +690,12 @@ async def execute_generation(request_data: dict) -> dict:
     if session:
         history_mgr = get_history_manager_sync(session.data_id)
     else:
-        from utils.history import history_manager
-        history_mgr = history_manager
+        # 계정 단위로 실행된 경우(user_{id})에는 그 계정 히스토리에 저장
+        if isinstance(session_id, str) and session_id.startswith("user_"):
+            history_mgr = get_history_manager_sync(session_id)
+        else:
+            from utils.history import history_manager
+            history_mgr = history_manager
     
     history_entry = history_mgr.add(
         prompt=prompt,
@@ -737,10 +772,11 @@ async def home(request: Request):
     session = await get_session_from_request(request)
     
     # 로그인하지 않은 경우 로그인 페이지로 리다이렉트
-    if not session.is_authenticated:
+    if not session or not session.is_authenticated:
         from fastapi.responses import RedirectResponse
         response = RedirectResponse(url="/login", status_code=302)
-        set_session_cookie(response, session)
+        # 비로그인 세션은 생성/유지하지 않음 (쿠키도 제거)
+        clear_session_cookie(response)
         return response
     
     response = templates.TemplateResponse("index.html", {
@@ -761,14 +797,15 @@ async def login_page(request: Request):
     session = await get_session_from_request(request)
     
     # 이미 로그인된 경우 메인 페이지로 리다이렉트
-    if session.is_authenticated:
+    if session and session.is_authenticated:
         from fastapi.responses import RedirectResponse
         response = RedirectResponse(url="/", status_code=302)
         set_session_cookie(response, session)
         return response
     
     response = templates.TemplateResponse("login.html", {"request": request})
-    set_session_cookie(response, session)
+    # 비로그인에서는 세션/쿠키를 만들지 않음
+    clear_session_cookie(response)
     
     return response
 
@@ -793,7 +830,8 @@ async def get_status(request: Request):
         "upscaler_available": REALESRGAN_AVAILABLE,
         "queue_length": queue_status["queue_length"],
         "connected_users": ws_manager.get_session_count(),
-        "session_id": session.session_id,
+        # 프론트 호환 필드: 로그인 시 계정 키(user_{id}), 비로그인 시 None
+        "session_id": (session.data_id if session else None),
         "is_admin": is_admin,
     }
     
@@ -1080,6 +1118,7 @@ async def generate_image(request: Request, gen_request: GenerateRequest):
     update_activity()
     
     session = await get_session_from_request(request)
+    require_auth(session)
     
     if pipe is None:
         raise HTTPException(400, "모델이 로드되지 않았습니다.")
@@ -1088,16 +1127,18 @@ async def generate_image(request: Request, gen_request: GenerateRequest):
         raise HTTPException(400, "프롬프트를 입력해주세요.")
     
     # Rate limit 체크
+    # 계정 단위로 제한(세션 단위 구분 제거)
     exceeded, count = session_manager.check_rate_limit(session.session_id)
     if exceeded:
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "warning",
             "content": f"⚠️ 요청이 너무 많습니다. (분당 {count}회) 잠시 후 다시 시도해주세요."
         })
     
     # 요청 데이터 준비
     request_data = {
-        "session_id": session.session_id,
+        # 실행/알림/큐 모두 계정(data_id) 단위로 처리
+        "session_id": session.data_id,
         "prompt": gen_request.prompt,
         "korean_prompt": gen_request.korean_prompt,
         "width": gen_request.width,
@@ -1110,18 +1151,18 @@ async def generate_image(request: Request, gen_request: GenerateRequest):
     }
     
     # 큐에 추가
-    item_id, position = await generation_queue.add_to_queue(session.session_id, request_data)
+    item_id, position = await generation_queue.add_to_queue(session.data_id, request_data)
     
     # 큐 상태 알림
     if position > 1:
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "queue_status",
             "status": "queued",
             "position": position,
             "message": f"⏳ 대기열에 추가되었습니다. (순서: {position})"
         })
     else:
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "queue_status",
             "status": "processing",
             "position": 0,
@@ -1860,14 +1901,16 @@ async def get_available_devices(request: Request):
 async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str] = Cookie(default=None)):
     """웹소켓 연결 (세션별)"""
     # 세션 가져오기
-    session = await session_manager.get_or_create_session(z_image_session)
+    # 비로그인에서 세션을 만들지 않기 위해 "기존 세션 조회"만 시도
+    session = session_manager.get_session(z_image_session) if z_image_session else None
     
     # 로그인하지 않은 경우 연결 거부
-    if not session.is_authenticated:
+    if not session or not session.is_authenticated:
         await websocket.close(code=4001, reason="로그인이 필요합니다.")
         return
     
-    await ws_manager.connect(websocket, session.session_id)
+    # 계정(data_id) 단위로 WebSocket 룸을 통일 (세션 구분 제거)
+    await ws_manager.connect(websocket, session.data_id)
     update_activity()
     
     try:
@@ -1875,7 +1918,8 @@ async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str
         await websocket.send_json({
             "type": "connected",
             "content": "서버에 연결되었습니다.",
-            "session_id": session.session_id,
+            # 프론트에서 쓰는 값도 계정 키로 통일
+            "session_id": session.data_id,
             "connected_users": ws_manager.get_session_count()
         })
         
@@ -1936,6 +1980,7 @@ async def get_edit_status(request: Request):
     update_edit_activity()
     
     session = await get_session_from_request(request)
+    require_auth(session)
     client_host = request.client.host if request.client else None
     is_admin = is_localhost(client_host)
     
@@ -1946,7 +1991,7 @@ async def get_edit_status(request: Request):
         "cpu_offload_enabled": longcat_edit_manager.cpu_offload_enabled,
         "device": longcat_edit_manager.device or longcat_edit_manager.get_device(),
         "vram": get_vram_info(),
-        "session_id": session.session_id,
+        "session_id": session.data_id,
         "is_admin": is_admin,
         "quantization_options": list(EDIT_QUANTIZATION_OPTIONS.keys()),
         # 양자화 옵션 상세 정보 (예상 VRAM 포함)
@@ -2112,6 +2157,7 @@ async def edit_image(
     update_edit_activity()
     
     session = await get_session_from_request(request)
+    require_auth(session)
     
     if not longcat_edit_manager.is_loaded:
         raise HTTPException(400, "편집 모델이 로드되지 않았습니다.")
@@ -2136,19 +2182,19 @@ async def edit_image(
         # 프롬프트 번역
         final_prompt = prompt
         if auto_translate_bool and edit_translator.is_korean(prompt):
-            await ws_manager.send_to_session(session.session_id, {
+            await ws_manager.send_to_session(session.data_id, {
                 "type": "edit_system",
                 "content": "🌐 편집 지시어 번역 중..."
             })
             final_prompt, success = edit_translator.translate(prompt)
             if not success:
-                await ws_manager.send_to_session(session.session_id, {
+                await ws_manager.send_to_session(session.data_id, {
                     "type": "edit_system",
                     "content": "⚠️ 번역 실패, 원문 사용"
                 })
         
         # 편집 시작 메시지
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "edit_system",
             "content": "🎨 이미지 편집 중..."
         })
@@ -2160,7 +2206,7 @@ async def edit_image(
             step_progress = current_step / total_steps / total_images
             overall_progress = int((image_progress + step_progress) * 100)
             
-            await ws_manager.send_to_session(session.session_id, {
+            await ws_manager.send_to_session(session.data_id, {
                 "type": "edit_progress",
                 "current_image": current_image,
                 "total_images": total_images,
@@ -2171,7 +2217,7 @@ async def edit_image(
         
         # 상태 메시지 콜백 정의 (참조 이미지 분석 등)
         async def edit_status_callback(message: str):
-            await ws_manager.send_to_session(session.session_id, {
+            await ws_manager.send_to_session(session.data_id, {
                 "type": "edit_system",
                 "content": message
             })
@@ -2247,13 +2293,13 @@ async def edit_image(
         )
         
         # 완료 메시지
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "edit_system",
             "content": f"✅ 편집 완료! (시드: {results[0]['seed'] if results else 'N/A'})"
         })
         
         # 결과 전송
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "edit_result",
             "images": images_response,
             "seed": results[0]["seed"] if results else -1,
@@ -2270,7 +2316,7 @@ async def edit_image(
         }
         
     except Exception as e:
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "error",
             "content": f"❌ 편집 오류: {str(e)}"
         })
