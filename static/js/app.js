@@ -1114,16 +1114,18 @@ async function loadSessionList() {
         sessionList.innerHTML = '';
         if (header) sessionList.appendChild(header);
         
-        result.sessions.forEach(session => {
+        const rows = result.users || [];
+        rows.forEach(user => {
             const item = document.createElement('div');
             item.className = 'session-list-item';
-            const usernameDisplay = session.username || (session.is_authenticated ? '로그인됨' : '비로그인');
+            const usernameDisplay = user.username || (user.user_id ? `user_${user.user_id}` : '알 수 없음');
+            const idDisplay = user.data_id || '';
             item.innerHTML = `
-                <span class="session-id" title="${session.session_id}">${session.session_id.substring(0, 8)}...</span>
+                <span class="session-id" title="${idDisplay}">${idDisplay}</span>
                 <span class="session-user">${usernameDisplay}</span>
-                <span class="session-activity">${formatDate(session.last_activity)}</span>
-                <span class="session-size">${session.data_size}</span>
-                <button class="btn btn-xs btn-danger" onclick="deleteSession('${session.session_id}')">
+                <span class="session-activity">${formatDate(user.last_activity)}</span>
+                <span class="session-size">${user.data_size || ''}</span>
+                <button class="btn btn-xs btn-danger" onclick="deleteSession('${idDisplay}')">
                     <i class="ri-delete-bin-line"></i>
                 </button>
             `;
@@ -1135,14 +1137,14 @@ async function loadSessionList() {
 }
 
 async function deleteSession(sessionId) {
-    if (!confirm('이 세션의 모든 데이터(히스토리, 즐겨찾기, 이미지)를 삭제하시겠습니까?')) return;
+    if (!confirm('이 사용자의 현재 접속(WebSocket)과 대기열 요청을 제거하시겠습니까?')) return;
     
     try {
         await apiCall(`/admin/sessions/${sessionId}`, 'DELETE');
         loadSessionList();
-        addMessage('system', '✅ 세션이 삭제되었습니다.');
+        addMessage('system', '✅ 사용자 접속이 정리되었습니다.');
     } catch (error) {
-        addMessage('system', `❌ 세션 삭제 실패: ${error.message}`, 'error');
+        addMessage('system', `❌ 사용자 정리 실패: ${error.message}`, 'error');
     }
 }
 

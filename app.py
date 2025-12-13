@@ -445,6 +445,23 @@ class SessionConnectionManager:
     def get_session_count(self) -> int:
         """연결된 세션 수"""
         return len(self._connections)
+
+    def get_connected_keys(self) -> List[str]:
+        """현재 연결된 키 목록 (현재는 user_{id} 형태)"""
+        return list(self._connections.keys())
+
+    async def disconnect_key(self, key: str) -> int:
+        """특정 키(user_{id})의 모든 WebSocket 연결 종료"""
+        async with self._lock:
+            connections = list(self._connections.get(key, []))
+        closed = 0
+        for ws in connections:
+            try:
+                await ws.close(code=4000)
+                closed += 1
+            except Exception:
+                pass
+        return closed
     
     def get_session_id(self, websocket: WebSocket) -> Optional[str]:
         """WebSocket의 세션 ID 가져오기"""
@@ -452,6 +469,47 @@ class SessionConnectionManager:
 
 
 ws_manager = SessionConnectionManager()
+
+
+def _format_bytes(total_size: int) -> str:
+    """바이트를 사람이 읽기 쉬운 단위로 변환"""
+    if total_size < 1024:
+        return f"{total_size} B"
+    if total_size < 1024 * 1024:
+        return f"{total_size / 1024:.1f} KB"
+    if total_size < 1024 * 1024 * 1024:
+        return f"{total_size / (1024 * 1024):.1f} MB"
+    return f"{total_size / (1024 * 1024 * 1024):.2f} GB"
+
+
+def _get_data_size_by_data_id(data_id: str) -> str:
+    """data_id(user_{id}) 기준 데이터 크기 계산 (세션 화면용)"""
+    from config.defaults import DATA_DIR, OUTPUTS_DIR
+    total_size = 0
+    sessions_dir = DATA_DIR / "sessions" / data_id
+    outputs_dir = OUTPUTS_DIR / data_id
+
+    for d in (sessions_dir, outputs_dir):
+        if d.exists():
+            for f in d.rglob("*"):
+                if f.is_file():
+                    try:
+                        total_size += f.stat().st_size
+                    except Exception:
+                        pass
+    return _format_bytes(total_size)
+
+
+def _parse_user_id_from_data_id(data_id: str) -> Optional[int]:
+    """user_123 -> 123"""
+    if not isinstance(data_id, str):
+        return None
+    if not data_id.startswith("user_"):
+        return None
+    try:
+        return int(data_id.split("_", 1)[1])
+    except Exception:
+        return None
 
 
 # ============= 큐 콜백 함수들 =============
@@ -1802,20 +1860,52 @@ async def admin_delete_user(request: Request, user_id: int):
 
 @app.get("/api/admin/sessions")
 async def get_all_sessions(request: Request):
-    """모든 세션 목록 (관리자 전용)"""
+    """접속 사용자(계정) 목록 (관리자 전용)"""
     require_admin(request)
-    
-    sessions = session_manager.get_all_sessions()
-    return {"sessions": sessions}
+
+    users = []
+    # WebSocket 연결 키는 현재 계정(data_id)로 통일되어 있음
+    for data_id in sorted(ws_manager.get_connected_keys()):
+        user_id = _parse_user_id_from_data_id(data_id)
+        user = auth_manager.get_user_by_id(user_id) if user_id is not None else None
+        username = user.username if user else None
+
+        # last_activity는 (있다면) 해당 유저의 활성 세션에서 가져옴
+        session = session_manager.get_session_by_user(user_id) if user_id is not None else None
+        last_activity = session.last_activity if session else None
+
+        users.append({
+            "data_id": data_id,           # user_{id}
+            "user_id": user_id,
+            "username": username,
+            "last_activity": last_activity,
+            "data_size": _get_data_size_by_data_id(data_id),
+            "connected": True,
+        })
+
+    return {"users": users}
 
 
 @app.delete("/api/admin/sessions/{session_id}")
 async def delete_session(session_id: str, request: Request):
-    """세션 삭제 (관리자 전용)"""
+    """사용자(계정) 접속 종료/정리 (관리자 전용)"""
     require_admin(request)
-    
-    success = await session_manager.delete_session(session_id)
-    return {"success": success}
+
+    # 프론트에서 넘어오는 값은 이제 data_id(user_{id})로 사용
+    data_id = session_id
+    user_id = _parse_user_id_from_data_id(data_id)
+
+    # WebSocket 강제 종료 + 대기열 제거
+    closed = await ws_manager.disconnect_key(data_id)
+    await generation_queue.remove_session_items(data_id)
+
+    # 세션 매핑 정리(가능한 경우)
+    if user_id is not None:
+        existing = session_manager.get_session_by_user(user_id)
+        if existing:
+            await session_manager.delete_session(existing.session_id)
+
+    return {"success": True, "closed_connections": closed}
 
 
 # ============= GPU 관리 API (관리자 전용) =============
