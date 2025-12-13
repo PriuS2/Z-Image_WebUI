@@ -1,6 +1,8 @@
 """GPU 모니터링 유틸리티 - 관리자용 GPU 상태 모니터링"""
 
 import torch
+import time
+import subprocess
 from typing import List, Dict, Any, Optional
 
 
@@ -9,6 +11,65 @@ class GPUMonitor:
     
     def __init__(self):
         self._model_assignments: Dict[str, str] = {}  # model_name -> device
+        self._nvml = None
+        self._nvml_available = False
+        self._smi_cache: Optional[List[Dict[str, Any]]] = None
+        self._smi_cache_ts: float = 0.0
+
+        # NVML이 있으면(= NVIDIA 드라이버 환경) 실제 VRAM/사용률을 조회할 수 있다.
+        # 없으면 torch.cuda 통계(프로세스/할당자 기준)로 fallback.
+        try:
+            import pynvml  # type: ignore
+            pynvml.nvmlInit()
+            self._nvml = pynvml
+            self._nvml_available = True
+        except Exception:
+            self._nvml = None
+            self._nvml_available = False
+
+    def _query_nvidia_smi(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        nvidia-smi로 전체 GPU 사용량을 조회 (NVML/pynvml 미설치 환경 fallback)
+        반환 단위:
+        - memory_*: bytes
+        - utilization_*: percent int
+        """
+        # 캐시(짧게) 사용: 관리자 패널 폴링 시 과도한 호출 방지
+        now = time.time()
+        if self._smi_cache is not None and (now - self._smi_cache_ts) < 1.0:
+            return self._smi_cache
+
+        try:
+            # nounits: MB/% 숫자만 출력됨
+            cmd = [
+                "nvidia-smi",
+                "--query-gpu=memory.total,memory.used,memory.free,utilization.gpu,utilization.memory",
+                "--format=csv,noheader,nounits",
+            ]
+            out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True).strip()
+            if not out:
+                return None
+
+            rows: List[Dict[str, Any]] = []
+            for line in out.splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 5:
+                    continue
+                total_mb, used_mb, free_mb, util_gpu, util_mem = parts[:5]
+                rows.append({
+                    "total": int(float(total_mb)) * 1024 * 1024,
+                    "used": int(float(used_mb)) * 1024 * 1024,
+                    "free": int(float(free_mb)) * 1024 * 1024,
+                    "util_gpu": int(float(util_gpu)),
+                    "util_mem": int(float(util_mem)),
+                    "source": "nvidia-smi",
+                })
+
+            self._smi_cache = rows
+            self._smi_cache_ts = now
+            return rows
+        except Exception:
+            return None
     
     @property
     def cuda_available(self) -> bool:
@@ -42,12 +103,45 @@ class GPUMonitor:
             return {}
         
         props = torch.cuda.get_device_properties(device_id)
-        
-        # 메모리 정보
+
+        memory_total = props.total_memory
+
+        # (A) NVML 기반: 실제 VRAM 사용량/여유/사용률
+        nvml_mem_used = None
+        nvml_mem_free = None
+        nvml_util_gpu = None
+        nvml_util_mem = None
+        util_source = "torch"
+
+        if self._nvml_available and self._nvml is not None:
+            try:
+                handle = self._nvml.nvmlDeviceGetHandleByIndex(device_id)
+                mem_info = self._nvml.nvmlDeviceGetMemoryInfo(handle)
+                util = self._nvml.nvmlDeviceGetUtilizationRates(handle)
+                nvml_mem_used = int(mem_info.used)
+                nvml_mem_free = int(mem_info.free)
+                nvml_util_gpu = int(getattr(util, "gpu", 0))
+                nvml_util_mem = int(getattr(util, "memory", 0))
+                util_source = "nvml"
+            except Exception:
+                nvml_mem_used = None
+                nvml_mem_free = None
+                nvml_util_gpu = None
+                nvml_util_mem = None
+
+        # (A-2) NVML이 없으면 nvidia-smi로 시도
+        if nvml_mem_used is None:
+            smi = self._query_nvidia_smi()
+            if smi and device_id < len(smi):
+                nvml_mem_used = smi[device_id].get("used")
+                nvml_mem_free = smi[device_id].get("free")
+                nvml_util_gpu = smi[device_id].get("util_gpu")
+                nvml_util_mem = smi[device_id].get("util_mem")
+                util_source = smi[device_id].get("source", util_source)
+
+        # (B) Torch 기반: 현재 프로세스(PyTorch 할당자) 기준
         memory_allocated = torch.cuda.memory_allocated(device_id)
         memory_reserved = torch.cuda.memory_reserved(device_id)
-        memory_total = props.total_memory
-        memory_free = memory_total - memory_reserved
         
         return {
             "id": device_id,
@@ -60,9 +154,17 @@ class GPUMonitor:
                 "allocated_gb": round(memory_allocated / (1024**3), 2),
                 "reserved": memory_reserved,
                 "reserved_gb": round(memory_reserved / (1024**3), 2),
-                "free": memory_free,
-                "free_gb": round(memory_free / (1024**3), 2),
-                "usage_percent": round((memory_reserved / memory_total) * 100, 1),
+                # NVML이 있으면 실제 VRAM 기준으로 표시(양자화/bnb 포함)
+                "used": nvml_mem_used if nvml_mem_used is not None else memory_reserved,
+                "used_gb": round(((nvml_mem_used if nvml_mem_used is not None else memory_reserved) / (1024**3)), 2),
+                "free": nvml_mem_free if nvml_mem_free is not None else max(0, memory_total - memory_reserved),
+                "free_gb": round((((nvml_mem_free if nvml_mem_free is not None else max(0, memory_total - memory_reserved)) / (1024**3))), 2),
+                "usage_percent": round((((nvml_mem_used if nvml_mem_used is not None else memory_reserved) / memory_total) * 100), 1),
+            },
+            "utilization": {
+                "gpu_percent": nvml_util_gpu,
+                "memory_percent": nvml_util_mem,
+                "source": util_source,
             },
             "multi_processor_count": props.multi_processor_count,
         }
@@ -119,7 +221,7 @@ class GPUMonitor:
             info = self.get_gpu_info(i)
             mem = info["memory"]
             summaries.append(
-                f"GPU {i}: {mem['allocated_gb']:.1f}GB / {mem['total_gb']:.1f}GB ({mem['usage_percent']:.0f}%)"
+                f"GPU {i}: {mem['used_gb']:.1f}GB / {mem['total_gb']:.1f}GB ({mem['usage_percent']:.0f}%)"
             )
         
         return " | ".join(summaries)

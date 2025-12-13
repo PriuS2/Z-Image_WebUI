@@ -745,6 +745,12 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
         # GPU 선택 (관리자만 특정 GPU 지정 가능)
         target_device = model_request.target_device
         client_host = request.client.host if request.client else None
+
+        # UI가 target_device="auto"로 보내는 경우가 많아서,
+        # 관리자가 설정한 기본 GPU(설정 -> GPU 설정/모니터링)를 자동 적용한다.
+        if target_device == "auto":
+            target_device = settings.get("generation_gpu", DEFAULT_GPU_SETTINGS["generation_gpu"])
+
         if not is_localhost(client_host) and target_device != "auto":
             # 관리자가 아닌 경우 auto로 강제
             target_device = "auto"
@@ -1862,6 +1868,12 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
     # GPU 선택 (관리자만 특정 GPU 지정 가능)
     target_device = model_request.target_device
     client_host = request.client.host if request.client else None
+
+    # UI가 target_device="auto"로 보내는 경우가 많아서,
+    # 관리자가 설정한 편집 기본 GPU를 자동 적용한다.
+    if target_device == "auto":
+        target_device = settings.get("edit_gpu", DEFAULT_GPU_SETTINGS["edit_gpu"])
+
     if not is_localhost(client_host) and target_device != "auto":
         # 관리자가 아닌 경우 auto로 강제
         target_device = "auto"

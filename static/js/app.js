@@ -993,16 +993,18 @@ function renderGpuStatus(data) {
 
     gpus.forEach(gpu => {
         const mem = gpu.memory || {};
+        const util = gpu.utilization || {};
         const loadedModels = gpu.loaded_models || [];
         const item = document.createElement('div');
         item.className = 'gpu-status-item';
         item.innerHTML = `
             <div class="gpu-status-item-title">
                 <span>GPU ${gpu.id}: ${gpu.name || ''}</span>
-                <span>${(mem.allocated_gb ?? 0).toFixed(2)}GB / ${(mem.total_gb ?? 0).toFixed(2)}GB</span>
+                <span>${(mem.used_gb ?? mem.allocated_gb ?? 0).toFixed(2)}GB / ${(mem.total_gb ?? 0).toFixed(2)}GB</span>
             </div>
             <div class="gpu-status-item-sub">
-                예약(reserved): ${(mem.reserved_gb ?? 0).toFixed(2)}GB / 사용률: ${(mem.usage_percent ?? 0).toFixed(1)}%<br/>
+                사용(used): ${(mem.used_gb ?? 0).toFixed(2)}GB / 예약(reserved): ${(mem.reserved_gb ?? 0).toFixed(2)}GB / 사용률: ${(mem.usage_percent ?? 0).toFixed(1)}%<br/>
+                사용률(GPU): ${util.gpu_percent ?? 'N/A'}% / 사용률(VRAM): ${util.memory_percent ?? 'N/A'}% (${util.source || 'unknown'})<br/>
                 로드된 모델: ${loadedModels.length ? loadedModels.join(', ') : '없음'}
             </div>
         `;
