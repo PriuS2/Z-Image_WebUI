@@ -1693,7 +1693,8 @@ async def reset_session_prompts(request: Request):
 @app.post("/api/auth/register")
 async def register(request: Request, data: RegisterRequest):
     """회원가입"""
-    session = await get_session_from_request(request)
+    # 회원가입은 세션(로그인 쿠키) 발급이 필요하므로 생성 허용
+    session = await get_session_from_request(request, create_if_missing=True)
     
     # 비밀번호 확인
     if data.password != data.password_confirm:
@@ -1717,7 +1718,8 @@ async def register(request: Request, data: RegisterRequest):
 @app.post("/api/auth/login")
 async def login(request: Request, data: LoginRequest):
     """로그인"""
-    session = await get_session_from_request(request)
+    # 로그인은 세션(로그인 쿠키) 발급이 필요하므로 생성 허용
+    session = await get_session_from_request(request, create_if_missing=True)
     
     # 인증
     success, message, user = auth_manager.authenticate(data.username, data.password)
@@ -1742,14 +1744,15 @@ async def logout(request: Request):
     """로그아웃"""
     session = await get_session_from_request(request)
     
-    if session.is_authenticated:
+    if session and session.is_authenticated:
         await session_manager.logout_session(session.session_id)
     
     response = JSONResponse(content={
         "success": True,
         "message": "로그아웃되었습니다."
     })
-    set_session_cookie(response, session)
+    # 로그아웃은 쿠키 제거
+    clear_session_cookie(response)
     return response
 
 
@@ -1762,12 +1765,13 @@ async def get_current_user(request: Request):
     client_host = request.client.host if request.client else None
     is_admin = is_localhost(client_host)
     
-    if not session.is_authenticated:
+    if not session or not session.is_authenticated:
         response = JSONResponse(content={
             "authenticated": False,
             "user": None,
             "is_admin": is_admin
         })
+        clear_session_cookie(response)
     else:
         user = auth_manager.get_user_by_id(session.user_id)
         response = JSONResponse(content={
@@ -1778,8 +1782,7 @@ async def get_current_user(request: Request):
             },
             "is_admin": is_admin
         })
-    
-    set_session_cookie(response, session)
+        set_session_cookie(response, session)
     return response
 
 
