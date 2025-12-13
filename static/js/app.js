@@ -1768,8 +1768,14 @@ async function loadImageToEditTab(imagePath) {
         // 이미지를 fetch하여 File 객체로 변환
         const response = await fetch(imagePath);
         const blob = await response.blob();
-        const filename = imagePath.split('/').pop() || 'image.png';
-        editImageFile = new File([blob], filename, { type: blob.type });
+        let filename = 'image.png';
+        if (typeof imagePath === 'string' && !imagePath.startsWith('data:')) {
+            const last = imagePath.split('/').pop();
+            if (last && last.length < 200) {
+                filename = last.split('?')[0] || 'image.png';
+            }
+        }
+        editImageFile = new File([blob], filename, { type: blob.type || 'image/png' });
         
         // 미리보기 표시
         const preview = document.getElementById('editUploadPreview');
@@ -1781,11 +1787,21 @@ async function loadImageToEditTab(imagePath) {
         placeholder.style.display = 'none';
         
         addEditMessage('system', '✅ 이미지가 로드되었습니다. 편집 지시어를 입력하세요.');
+
+        // 바로 이어서 입력할 수 있게 포커스
+        const koreanInput = document.getElementById('editKoreanInput');
+        if (koreanInput) koreanInput.focus();
         
     } catch (error) {
         console.error('이미지 로드 실패:', error);
         addEditMessage('system', `❌ 이미지 로드 실패: ${error.message}`);
     }
+}
+
+function continueEditFromMessageImage(imageSrc) {
+    if (!imageSrc) return;
+    // 편집 결과 이미지(서버 경로/데이터URL) 모두 지원
+    loadImageToEditTab(imageSrc);
 }
 
 // 이미지 뷰어에서 편집 탭으로 이동
@@ -3993,7 +4009,7 @@ function addEditImageMessage(originalSrc, resultImages, prompt) {
     const imageList = [
         { path: originalSrc, metadata: { prompt: '원본 이미지' } },
         ...resultImages.map(img => ({
-            path: img.path,
+            path: img.base64 ? 'data:image/png;base64,' + img.base64 : img.path,
             metadata: { prompt: `편집 결과: ${prompt}`, seed: img.seed }
         }))
     ];
@@ -4003,12 +4019,29 @@ function addEditImageMessage(originalSrc, resultImages, prompt) {
     comparisonDiv.className = 'edit-comparison';
     
     // 원본 이미지
+    const originalWrapper = document.createElement('div');
+    originalWrapper.className = 'edit-result-image-wrapper';
+
     const originalImg = document.createElement('img');
     originalImg.src = originalSrc;
     originalImg.alt = '원본';
     originalImg.title = '원본 이미지 (클릭하여 확대)';
     originalImg.onclick = () => showImageModalWithList(imageList, 0);
-    comparisonDiv.appendChild(originalImg);
+
+    const originalContinueBtn = document.createElement('button');
+    originalContinueBtn.type = 'button';
+    originalContinueBtn.className = 'continue-edit-btn';
+    originalContinueBtn.title = '이 이미지를 입력 이미지로 넣고 이어서 편집';
+    originalContinueBtn.innerHTML = '<i class="ri-add-line"></i> 이어서 편집';
+    originalContinueBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        continueEditFromMessageImage(originalImg.src);
+    });
+
+    originalWrapper.appendChild(originalImg);
+    originalWrapper.appendChild(originalContinueBtn);
+    comparisonDiv.appendChild(originalWrapper);
     
     // 화살표
     const arrow = document.createElement('span');
@@ -4018,12 +4051,29 @@ function addEditImageMessage(originalSrc, resultImages, prompt) {
     
     // 결과 이미지들
     resultImages.forEach((img, index) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'edit-result-image-wrapper';
+
         const resultImg = document.createElement('img');
         resultImg.src = img.base64 ? 'data:image/png;base64,' + img.base64 : img.path;
         resultImg.alt = '결과';
         resultImg.title = `시드: ${img.seed}\n클릭하여 확대 (좌우 화살표로 탐색)`;
         resultImg.onclick = () => showImageModalWithList(imageList, index + 1);
-        comparisonDiv.appendChild(resultImg);
+
+        const continueBtn = document.createElement('button');
+        continueBtn.type = 'button';
+        continueBtn.className = 'continue-edit-btn';
+        continueBtn.title = '이 이미지를 입력 이미지로 넣고 이어서 편집';
+        continueBtn.innerHTML = '<i class="ri-add-line"></i> 이어서 편집';
+        continueBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            continueEditFromMessageImage(resultImg.src);
+        });
+
+        wrapper.appendChild(resultImg);
+        wrapper.appendChild(continueBtn);
+        comparisonDiv.appendChild(wrapper);
     });
     
     contentDiv.appendChild(comparisonDiv);
