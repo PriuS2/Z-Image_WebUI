@@ -212,6 +212,9 @@ class SettingsRequest(BaseModel):
     # 자동 언로드 설정
     auto_unload_enabled: Optional[bool] = None
     auto_unload_timeout: Optional[int] = None
+    # 편집 모델 자동 언로드 설정
+    edit_auto_unload_enabled: Optional[bool] = None
+    edit_auto_unload_timeout: Optional[int] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -1276,6 +1279,13 @@ async def save_settings(request: Request, settings_request: SettingsRequest):
         timeout = max(1, min(1440, settings_request.auto_unload_timeout))
         settings.set("auto_unload_timeout", timeout)
     
+    if settings_request.edit_auto_unload_enabled is not None:
+        settings.set("edit_auto_unload_enabled", settings_request.edit_auto_unload_enabled)
+    
+    if settings_request.edit_auto_unload_timeout is not None:
+        timeout = max(1, min(1440, settings_request.edit_auto_unload_timeout))
+        settings.set("edit_auto_unload_timeout", timeout)
+    
     return {"success": True}
 
 
@@ -1347,6 +1357,9 @@ async def get_settings(request: Request):
         # 자동 언로드 설정
         "auto_unload_enabled": settings.get("auto_unload_enabled", True),
         "auto_unload_timeout": settings.get("auto_unload_timeout", 10),
+        # 편집 모델 자동 언로드 설정
+        "edit_auto_unload_enabled": settings.get("edit_auto_unload_enabled", True),
+        "edit_auto_unload_timeout": settings.get("edit_auto_unload_timeout", LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT),
     }
 
 

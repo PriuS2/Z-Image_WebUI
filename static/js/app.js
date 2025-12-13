@@ -862,6 +862,7 @@ function updateAdminUI() {
     const sessionManagementSection = document.getElementById('sessionManagementSection');
     const systemPromptsSection = document.getElementById('systemPromptsSection');
     const autoUnloadSection = document.getElementById('autoUnloadSection');
+    const editAutoUnloadSection = document.getElementById('editAutoUnloadSection');
     
     // 시스템 프롬프트는 개인화되므로 항상 활성화
     if (systemPromptsSection) {
@@ -886,6 +887,12 @@ function updateAdminUI() {
                 el.style.display = '';
             });
         }
+        if (editAutoUnloadSection) {
+            editAutoUnloadSection.querySelectorAll('input, button').forEach(el => {
+                el.disabled = false;
+                el.style.display = '';
+            });
+        }
         if (sessionManagementSection) {
             sessionManagementSection.style.display = 'block';
             loadSessionList();
@@ -906,6 +913,14 @@ function updateAdminUI() {
                 el.disabled = true;
             });
             autoUnloadSection.querySelectorAll('button').forEach(el => {
+                el.style.display = 'none';
+            });
+        }
+        if (editAutoUnloadSection) {
+            editAutoUnloadSection.querySelectorAll('input').forEach(el => {
+                el.disabled = true;
+            });
+            editAutoUnloadSection.querySelectorAll('button').forEach(el => {
                 el.style.display = 'none';
             });
         }
@@ -2124,23 +2139,59 @@ async function saveAutoUnloadSettings() {
     }
 }
 
+async function saveEditAutoUnloadSettings() {
+    if (!isAdmin) {
+        addMessage('system', '❌ 편집 모델 자동 언로드 설정은 관리자만 변경할 수 있습니다.', 'error');
+        return;
+    }
+    
+    const enabled = document.getElementById('editAutoUnloadEnabledCheck')?.checked ?? true;
+    const timeout = parseInt(document.getElementById('editAutoUnloadTimeoutInput')?.value) || 10;
+    
+    try {
+        await apiCall('/settings', 'POST', {
+            edit_auto_unload_enabled: enabled,
+            edit_auto_unload_timeout: timeout
+        });
+        
+        const statusText = enabled ? `${timeout}분 후 자동 언로드` : '비활성화';
+        addMessage('system', `✅ 편집 모델 자동 언로드 설정 저장됨 (${statusText})`);
+    } catch (error) {
+        addMessage('system', `❌ 저장 실패: ${error.message}`, 'error');
+    }
+}
+
 async function loadAutoUnloadSettings() {
     try {
         const result = await apiCall('/settings');
-        
+
+        // Z-Image 자동 언로드 설정
         const enabledCheck = document.getElementById('autoUnloadEnabledCheck');
         const timeoutInput = document.getElementById('autoUnloadTimeoutInput');
-        
+
         if (enabledCheck) {
             enabledCheck.checked = result.auto_unload_enabled ?? true;
         }
         if (timeoutInput) {
             timeoutInput.value = result.auto_unload_timeout ?? 10;
         }
-        
+
+        // 편집 모델 자동 언로드 설정
+        const editEnabledCheck = document.getElementById('editAutoUnloadEnabledCheck');
+        const editTimeoutInput = document.getElementById('editAutoUnloadTimeoutInput');
+
+        if (editEnabledCheck) {
+            editEnabledCheck.checked = result.edit_auto_unload_enabled ?? true;
+        }
+        if (editTimeoutInput) {
+            editTimeoutInput.value = result.edit_auto_unload_timeout ?? 10;
+        }
+
         console.log('자동 언로드 설정 로드 완료:', {
             enabled: result.auto_unload_enabled,
-            timeout: result.auto_unload_timeout
+            timeout: result.auto_unload_timeout,
+            edit_enabled: result.edit_auto_unload_enabled,
+            edit_timeout: result.edit_auto_unload_timeout
         });
     } catch (error) {
         console.error('자동 언로드 설정 로드 실패:', error);
@@ -2924,6 +2975,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnSaveAutoUnload = document.getElementById('btnSaveAutoUnload');
     if (btnSaveAutoUnload) {
         btnSaveAutoUnload.addEventListener('click', saveAutoUnloadSettings);
+    }
+    
+    // 편집 모델 자동 언로드 설정
+    const btnSaveEditAutoUnload = document.getElementById('btnSaveEditAutoUnload');
+    if (btnSaveEditAutoUnload) {
+        btnSaveEditAutoUnload.addEventListener('click', saveEditAutoUnloadSettings);
     }
     
     // 설정 탭 편집 모델 로드/언로드
