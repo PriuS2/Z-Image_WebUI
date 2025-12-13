@@ -99,6 +99,9 @@ class SettingsManager:
             # 모델 설정
             "quantization": "BF16 (기본, 최고품질)",
             "cpu_offload": False,
+            # 편집 모델 설정 (LongCat-Image-Edit)
+            "edit_quantization": "BF16 (기본, 최고품질)",
+            "edit_cpu_offload": True,
             
             # UI 설정
             "theme": "다크 모드",

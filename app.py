@@ -221,6 +221,13 @@ class SettingsRequest(BaseModel):
     edit_auto_unload_enabled: Optional[bool] = None
     edit_auto_unload_timeout: Optional[int] = None
 
+    # 모델 설정 (관리자 전용)
+    quantization: Optional[str] = None
+    cpu_offload: Optional[bool] = None
+    # 편집 모델 설정 (관리자 전용)
+    edit_quantization: Optional[str] = None
+    edit_cpu_offload: Optional[bool] = None
+
 
 class FavoriteRequest(BaseModel):
     name: str
@@ -815,21 +822,30 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
         # GPU 선택 (관리자만 특정 GPU 지정 가능)
         target_device = model_request.target_device
         client_host = request.client.host if request.client else None
+        is_admin = is_localhost(client_host)
 
         # UI가 target_device="auto"로 보내는 경우가 많아서,
         # 관리자가 설정한 기본 GPU(설정 -> GPU 설정/모니터링)를 자동 적용한다.
         if target_device == "auto":
             target_device = settings.get("generation_gpu", DEFAULT_GPU_SETTINGS["generation_gpu"])
 
-        if not is_localhost(client_host) and target_device != "auto":
+        if not is_admin and target_device != "auto":
             # 관리자가 아닌 경우 auto로 강제
             target_device = "auto"
         
         device = get_device(target_device)
-        quant_info = QUANTIZATION_OPTIONS.get(model_request.quantization)
+
+        # 양자화/CPU 오프로딩은 관리자만 변경 가능
+        requested_quantization = model_request.quantization
+        requested_cpu_offload = model_request.cpu_offload
+        if not is_admin:
+            requested_quantization = settings.get("quantization", requested_quantization)
+            requested_cpu_offload = settings.get("cpu_offload", requested_cpu_offload)
+
+        quant_info = QUANTIZATION_OPTIONS.get(requested_quantization)
         
         if not quant_info:
-            raise HTTPException(400, f"지원하지 않는 양자화: {model_request.quantization}")
+            raise HTTPException(400, f"지원하지 않는 양자화: {requested_quantization}")
         
         repo_id = quant_info["repo"]
         dtype = quant_info["type"]
@@ -947,7 +963,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             })
             await asyncio.sleep(0.1)
             
-            if model_request.cpu_offload:
+            if requested_cpu_offload:
                 await asyncio.to_thread(pipe.enable_model_cpu_offload)
                 await ws_manager.broadcast({
                     "type": "model_progress", 
@@ -959,7 +975,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             else:
                 await asyncio.to_thread(pipe.to, device)
             
-            current_model = model_request.quantization
+            current_model = requested_quantization
             
             # GPU 모니터에 모델 등록
             gpu_monitor.register_model("Z-Image-Turbo", device)
@@ -1391,6 +1407,24 @@ async def save_settings(request: Request, settings_request: SettingsRequest):
     if settings_request.edit_auto_unload_timeout is not None:
         timeout = max(1, min(1440, settings_request.edit_auto_unload_timeout))
         settings.set("edit_auto_unload_timeout", timeout)
+
+    # 모델 설정 (관리자 전용)
+    if settings_request.quantization is not None:
+        if settings_request.quantization not in QUANTIZATION_OPTIONS:
+            raise HTTPException(400, f"지원하지 않는 양자화: {settings_request.quantization}")
+        settings.set("quantization", settings_request.quantization)
+
+    if settings_request.cpu_offload is not None:
+        settings.set("cpu_offload", bool(settings_request.cpu_offload))
+
+    # 편집 모델 설정 (관리자 전용)
+    if settings_request.edit_quantization is not None:
+        if settings_request.edit_quantization not in EDIT_QUANTIZATION_OPTIONS:
+            raise HTTPException(400, f"지원하지 않는 편집 양자화: {settings_request.edit_quantization}")
+        settings.set("edit_quantization", settings_request.edit_quantization)
+
+    if settings_request.edit_cpu_offload is not None:
+        settings.set("edit_cpu_offload", bool(settings_request.edit_cpu_offload))
     
     return {"success": True}
 
@@ -1458,6 +1492,11 @@ async def get_settings(request: Request):
         # 기타 설정
         "output_path": str(settings.get("output_path", OUTPUTS_DIR)),
         "filename_pattern": settings.get("filename_pattern", "{date}_{time}_{seed}"),
+        # 모델 설정 (관리자만 변경 가능 - 모든 사용자에게는 현재 값만 제공)
+        "quantization": settings.get("quantization", "BF16 (기본, 최고품질)"),
+        "cpu_offload": settings.get("cpu_offload", False),
+        "edit_quantization": settings.get("edit_quantization", "BF16 (기본, 최고품질)"),
+        "edit_cpu_offload": settings.get("edit_cpu_offload", True),
         "quantization_options": list(QUANTIZATION_OPTIONS.keys()),
         "resolution_presets": RESOLUTION_PRESETS,
         # 자동 언로드 설정
@@ -1938,13 +1977,14 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
     # GPU 선택 (관리자만 특정 GPU 지정 가능)
     target_device = model_request.target_device
     client_host = request.client.host if request.client else None
+    is_admin = is_localhost(client_host)
 
     # UI가 target_device="auto"로 보내는 경우가 많아서,
     # 관리자가 설정한 편집 기본 GPU를 자동 적용한다.
     if target_device == "auto":
         target_device = settings.get("edit_gpu", DEFAULT_GPU_SETTINGS["edit_gpu"])
 
-    if not is_localhost(client_host) and target_device != "auto":
+    if not is_admin and target_device != "auto":
         # 관리자가 아닌 경우 auto로 강제
         target_device = "auto"
     
@@ -1967,9 +2007,16 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 "stage": "init"
             })
             
+            # 양자화/CPU 오프로딩은 관리자만 변경 가능
+            requested_quantization = model_request.quantization
+            requested_cpu_offload = model_request.cpu_offload
+            if not is_admin:
+                requested_quantization = settings.get("edit_quantization", requested_quantization)
+                requested_cpu_offload = settings.get("edit_cpu_offload", requested_cpu_offload)
+
             success, message = await longcat_edit_manager.load_model(
-                quantization=model_request.quantization,
-                cpu_offload=model_request.cpu_offload,
+                quantization=requested_quantization,
+                cpu_offload=requested_cpu_offload,
                 model_path=model_request.model_path if model_request.model_path else None,
                 target_device=target_device,
                 progress_callback=progress_callback

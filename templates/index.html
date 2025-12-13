@@ -79,16 +79,6 @@
                                     <span class="status-dot offline"></span>
                                     <span class="status-text">모델 미로드</span>
                                 </div>
-                                <div class="chat-model-select">
-                                    <select id="chatQuantizationSelect" title="양자화 옵션 선택">
-                                        <option value="BF16 (기본, 최고품질)">BF16 (기본)</option>
-                                    </select>
-                                </div>
-                                <label class="cpu-offload-label" title="VRAM이 부족할 때 체크하세요. RAM을 사용하여 VRAM 사용량을 줄입니다.">
-                                    <input type="checkbox" id="chatCpuOffloadCheck">
-                                    <span>CPU 오프로딩</span>
-                                    <span class="tooltip-icon" data-tooltip="VRAM이 부족할 때 사용하세요. 모델 일부를 RAM에 올려 VRAM 사용량을 줄입니다. 속도는 약간 느려질 수 있습니다.">?</span>
-                                </label>
                             </div>
                             <div class="model-actions">
                                 <button class="btn btn-sm btn-primary" id="btnChatLoadModel" title="모델 로드">
@@ -236,15 +226,6 @@
                                     <span class="status-dot offline"></span>
                                     <span class="status-text">편집 모델 미로드</span>
                                 </div>
-                                <div class="chat-model-select">
-                                    <select id="editQuantizationSelect" title="양자화 옵션 선택">
-                                        <option value="BF16 (기본, 최고품질)">BF16 (기본)</option>
-                                    </select>
-                                </div>
-                                <label class="cpu-offload-label" title="VRAM이 부족할 때 체크하세요.">
-                                    <input type="checkbox" id="editCpuOffloadCheck" checked>
-                                    <span>CPU 오프로딩</span>
-                                </label>
                             </div>
                             <div class="model-actions">
                                 <button class="btn btn-sm btn-primary" id="btnEditLoadModel" title="편집 모델 로드">

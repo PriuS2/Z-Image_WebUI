@@ -10,6 +10,7 @@ let isLlmProcessing = false;  // LLM 처리 중 여부
 let lastHistoryId = null;
 let isAdmin = false;  // 관리자 여부
 let sessionId = null;  // 현재 세션 ID
+let pendingEditQuantizationValue = null; // 설정에서 내려온 편집 양자화(옵션 로드 전 임시 보관)
 
 // ============= 관리자 GPU 설정/모니터링 =============
 let adminGpuSettings = {
@@ -733,14 +734,11 @@ async function loadModel(fromChat = false) {
         return;
     }
     
-    const quantization = fromChat
-        ? document.getElementById('chatQuantizationSelect')?.value || "BF16 (기본, 최고품질)"
-        : document.getElementById('quantizationSelect')?.value || "BF16 (기본, 최고품질)";
+    // 양자화/CPU 오프로딩 설정은 설정 탭에서만 관리
+    const quantization = document.getElementById('quantizationSelect')?.value || "BF16 (기본, 최고품질)";
     const modelPath = document.getElementById('modelPathInput')?.value || '';
     
-    const cpuOffload = fromChat 
-        ? document.getElementById('chatCpuOffloadCheck')?.checked || false
-        : document.getElementById('cpuOffloadCheck')?.checked || false;
+    const cpuOffload = document.getElementById('cpuOffloadCheck')?.checked || false;
     
     try {
         setModelLoadingState(true);
@@ -854,7 +852,13 @@ async function updateModelStatus() {
                 dot.classList.add('online');
             }
             if (badgeText) {
-                badgeText.textContent = status.current_model ? `✓ ${status.current_model.split(' ')[0]}` : '모델 로드됨';
+                if (status.current_model) {
+                    badgeText.textContent = `✓ ${status.current_model}`;
+                    statusBadge.title = status.current_model;
+                } else {
+                    badgeText.textContent = '모델 로드됨';
+                    statusBadge.title = '';
+                }
             }
         } else {
             indicator.classList.remove('online');
@@ -866,6 +870,7 @@ async function updateModelStatus() {
                 dot.classList.add('offline');
             }
             if (badgeText) badgeText.textContent = '모델 미로드';
+            if (statusBadge) statusBadge.title = '';
         }
         
         // 관리자 상태 업데이트
@@ -892,6 +897,10 @@ function updateAdminUI() {
     const autoUnloadSection = document.getElementById('autoUnloadSection');
     const editAutoUnloadSection = document.getElementById('editAutoUnloadSection');
     const gpuManagementSection = document.getElementById('gpuManagementSection');
+    const quantizationSelect = document.getElementById('quantizationSelect');
+    const cpuOffloadCheck = document.getElementById('cpuOffloadCheck');
+    const editQuantizationSelectSettings = document.getElementById('editQuantizationSelectSettings');
+    const editCpuOffloadCheckSettings = document.getElementById('editCpuOffloadCheckSettings');
     
     // 시스템 프롬프트는 개인화되므로 항상 활성화
     if (systemPromptsSection) {
@@ -930,6 +939,11 @@ function updateAdminUI() {
         if (gpuManagementSection) {
             gpuManagementSection.style.display = 'block';
         }
+
+        // 양자화/CPU 오프로딩은 관리자만 변경 가능
+        [quantizationSelect, cpuOffloadCheck, editQuantizationSelectSettings, editCpuOffloadCheckSettings].forEach(el => {
+            if (el) el.disabled = false;
+        });
     } else {
         // 일반 사용자: LLM 설정 및 자동 언로드 설정 읽기 전용
         if (adminNotice) adminNotice.style.display = 'block';
@@ -964,6 +978,11 @@ function updateAdminUI() {
         if (gpuManagementSection) {
             gpuManagementSection.style.display = 'none';
         }
+
+        // 양자화/CPU 오프로딩은 관리자만 변경 가능
+        [quantizationSelect, cpuOffloadCheck, editQuantizationSelectSettings, editCpuOffloadCheckSettings].forEach(el => {
+            if (el) el.disabled = true;
+        });
     }
 }
 
@@ -1324,35 +1343,50 @@ async function loadQuantizationOptions() {
     try {
         const result = await apiCall('/settings');
         const settingsSelect = document.getElementById('quantizationSelect');
-        const chatSelect = document.getElementById('chatQuantizationSelect');
         
         if (result.quantization_options) {
-            [settingsSelect, chatSelect].forEach(select => {
-                if (select) {
-                    select.innerHTML = '';
-                    
-                    result.quantization_options.forEach(option => {
-                        const opt = document.createElement('option');
-                        opt.value = option;
-                        if (select === chatSelect) {
-                            let shortName = option;
-                            const match = option.match(/^(?:GGUF\s+)?(\S+)\s*\(([^,]+)/);
-                            if (match) {
-                                shortName = `${match[1]} (${match[2].trim()})`;
-                            }
-                            opt.textContent = shortName;
-                            opt.title = option;
-                        } else {
-                            opt.textContent = option;
-                        }
-                        select.appendChild(opt);
-                    });
-                }
-            });
+            if (settingsSelect) {
+                settingsSelect.innerHTML = '';
+                result.quantization_options.forEach(option => {
+                    const opt = document.createElement('option');
+                    opt.value = option;
+                    opt.textContent = option;
+                    settingsSelect.appendChild(opt);
+                });
+            }
             
             console.log('양자화 옵션 로드 완료:', result.quantization_options.length + '개');
             
             updateModelDownloadStatus();
+        }
+
+        // 서버에 저장된 모델 설정값 반영
+        const savedQuant = result.quantization;
+        const savedCpuOffload = result.cpu_offload;
+        const savedEditQuant = result.edit_quantization;
+        const savedEditCpuOffload = result.edit_cpu_offload;
+
+        if (settingsSelect && savedQuant && Array.from(settingsSelect.options).some(o => o.value === savedQuant)) {
+            settingsSelect.value = savedQuant;
+        }
+
+        const cpuOffloadCheck = document.getElementById('cpuOffloadCheck');
+        if (cpuOffloadCheck && typeof savedCpuOffload === 'boolean') {
+            cpuOffloadCheck.checked = savedCpuOffload;
+        }
+
+        const editCpuOffloadCheckSettings = document.getElementById('editCpuOffloadCheckSettings');
+        if (editCpuOffloadCheckSettings && typeof savedEditCpuOffload === 'boolean') {
+            editCpuOffloadCheckSettings.checked = savedEditCpuOffload;
+        }
+
+        if (savedEditQuant) {
+            pendingEditQuantizationValue = savedEditQuant;
+            const editSelect = document.getElementById('editQuantizationSelectSettings');
+            if (editSelect && Array.from(editSelect.options).some(o => o.value === savedEditQuant)) {
+                editSelect.value = savedEditQuant;
+                pendingEditQuantizationValue = null;
+            }
         }
         
         // 관리자 상태 업데이트
@@ -1365,23 +1399,41 @@ async function loadQuantizationOptions() {
     }
 }
 
+// ============= 모델 설정 저장 (관리자 전용) =============
+async function saveModelSettings() {
+    if (!isAdmin) return;
+
+    const quantization = document.getElementById('quantizationSelect')?.value || "BF16 (기본, 최고품질)";
+    const cpuOffload = document.getElementById('cpuOffloadCheck')?.checked || false;
+    const editQuantization = document.getElementById('editQuantizationSelectSettings')?.value || "BF16 (기본, 최고품질)";
+    const editCpuOffload = document.getElementById('editCpuOffloadCheckSettings')?.checked ?? true;
+
+    try {
+        await apiCall('/settings', 'POST', {
+            quantization,
+            cpu_offload: cpuOffload,
+            edit_quantization: editQuantization,
+            edit_cpu_offload: editCpuOffload
+        });
+    } catch (error) {
+        console.error('모델 설정 저장 실패:', error);
+    }
+}
+
 async function updateModelDownloadStatus() {
     try {
         const result = await apiCall('/model-status');
         const status = result.status || {};
         
         const settingsSelect = document.getElementById('quantizationSelect');
-        const chatSelect = document.getElementById('chatQuantizationSelect');
         
-        [settingsSelect, chatSelect].forEach(select => {
-            if (!select) return;
-            
-            Array.from(select.options).forEach(opt => {
+        if (settingsSelect) {
+            Array.from(settingsSelect.options).forEach(opt => {
                 const optionName = opt.value;
                 const isDownloaded = status[optionName] || false;
-                
+
                 let text = opt.textContent.replace(/^[✓⬇]\s*/, '');
-                
+
                 if (isDownloaded) {
                     opt.textContent = `✓ ${text}`;
                     opt.style.color = '#22c55e';
@@ -1389,11 +1441,11 @@ async function updateModelDownloadStatus() {
                     opt.textContent = `⬇ ${text}`;
                     opt.style.color = '';
                 }
-                
+
                 const statusText = isDownloaded ? '(다운로드됨)' : '(미다운로드)';
                 opt.title = `${optionName} ${statusText}`;
             });
-        });
+        }
         
         console.log('모델 다운로드 상태 업데이트 완료');
     } catch (error) {
@@ -3030,30 +3082,19 @@ document.addEventListener('DOMContentLoaded', () => {
     // 모델 관리 - 대화 탭
     document.getElementById('btnChatLoadModel').addEventListener('click', () => loadModel(true));
     document.getElementById('btnChatUnloadModel').addEventListener('click', unloadModel);
-    
-    // CPU 오프로딩 체크박스 동기화
-    const chatCpuCheck = document.getElementById('chatCpuOffloadCheck');
-    const settingsCpuCheck = document.getElementById('cpuOffloadCheck');
-    if (chatCpuCheck && settingsCpuCheck) {
-        chatCpuCheck.addEventListener('change', (e) => {
-            settingsCpuCheck.checked = e.target.checked;
+
+    // 모델 설정(양자화/CPU 오프로딩) 변경 시 저장 (관리자만)
+    const quantizationSelect = document.getElementById('quantizationSelect');
+    const cpuOffloadCheck = document.getElementById('cpuOffloadCheck');
+    const editQuantizationSelectSettings = document.getElementById('editQuantizationSelectSettings');
+    const editCpuOffloadCheckSettings = document.getElementById('editCpuOffloadCheckSettings');
+
+    [quantizationSelect, cpuOffloadCheck, editQuantizationSelectSettings, editCpuOffloadCheckSettings].forEach(el => {
+        if (!el) return;
+        el.addEventListener('change', () => {
+            if (isAdmin) saveModelSettings();
         });
-        settingsCpuCheck.addEventListener('change', (e) => {
-            chatCpuCheck.checked = e.target.checked;
-        });
-    }
-    
-    // 양자화 선택 드롭다운 동기화
-    const chatQuantSelect = document.getElementById('chatQuantizationSelect');
-    const settingsQuantSelect = document.getElementById('quantizationSelect');
-    if (chatQuantSelect && settingsQuantSelect) {
-        chatQuantSelect.addEventListener('change', (e) => {
-            settingsQuantSelect.value = e.target.value;
-        });
-        settingsQuantSelect.addEventListener('change', (e) => {
-            chatQuantSelect.value = e.target.value;
-        });
-    }
+    });
     
     // 커스텀 해상도 토글
     document.getElementById('resolutionSelect').addEventListener('change', (e) => {
@@ -3170,15 +3211,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnUnloadEditModelSettings = document.getElementById('btnUnloadEditModelSettings');
     if (btnLoadEditModelSettings) {
         btnLoadEditModelSettings.addEventListener('click', async () => {
-            const quant = document.getElementById('editQuantizationSelectSettings')?.value || "BF16 (기본, 최고품질)";
-            const cpuOffload = document.getElementById('editCpuOffloadCheckSettings')?.checked ?? true;
-            
-            // 편집 탭의 설정과 동기화
-            const editQuantSelect = document.getElementById('editQuantizationSelect');
-            const editCpuCheck = document.getElementById('editCpuOffloadCheck');
-            if (editQuantSelect) editQuantSelect.value = quant;
-            if (editCpuCheck) editCpuCheck.checked = cpuOffload;
-            
             await loadEditModel();
         });
     }
@@ -3590,8 +3622,9 @@ async function loadEditModel() {
         return;
     }
     
-    const quantization = document.getElementById('editQuantizationSelect')?.value || "BF16 (기본, 최고품질)";
-    const cpuOffload = document.getElementById('editCpuOffloadCheck')?.checked ?? true;
+    // 편집 모델 양자화/CPU 오프로딩 설정은 설정 탭에서만 관리
+    const quantization = document.getElementById('editQuantizationSelectSettings')?.value || "BF16 (기본, 최고품질)";
+    const cpuOffload = document.getElementById('editCpuOffloadCheckSettings')?.checked ?? true;
     
     try {
         setEditModelLoadingState(true);
@@ -3682,7 +3715,13 @@ function updateEditModelStatusFromData(data) {
             dot.classList.add('online');
         }
         if (text) {
-            text.textContent = data.current_model ? `✓ ${data.current_model.split(' ')[0]}` : '편집 모델 로드됨';
+            if (data.current_model) {
+                text.textContent = `✓ ${data.current_model}`;
+                statusBadge.title = data.current_model;
+            } else {
+                text.textContent = '편집 모델 로드됨';
+                statusBadge.title = '';
+            }
         }
     } else {
         if (dot) {
@@ -3692,6 +3731,7 @@ function updateEditModelStatusFromData(data) {
         if (text) {
             text.textContent = '편집 모델 미로드';
         }
+        statusBadge.title = '';
     }
 }
 
@@ -4121,20 +4161,23 @@ function hideEditProgress() {
 async function loadEditQuantizationOptions() {
     try {
         const result = await apiCall('/edit/status');
-        const editTabSelect = document.getElementById('editQuantizationSelect');
         const settingsSelect = document.getElementById('editQuantizationSelectSettings');
         
-        [editTabSelect, settingsSelect].forEach(select => {
-            if (result.quantization_options && select) {
-                select.innerHTML = '';
-                result.quantization_options.forEach(option => {
-                    const opt = document.createElement('option');
-                    opt.value = option;
-                    opt.textContent = option;
-                    select.appendChild(opt);
-                });
-            }
-        });
+        if (result.quantization_options && settingsSelect) {
+            settingsSelect.innerHTML = '';
+            result.quantization_options.forEach(option => {
+                const opt = document.createElement('option');
+                opt.value = option;
+                opt.textContent = option;
+                settingsSelect.appendChild(opt);
+            });
+        }
+
+        // /settings에서 먼저 내려온 편집 양자화 설정값이 있으면 반영
+        if (settingsSelect && pendingEditQuantizationValue && Array.from(settingsSelect.options).some(o => o.value === pendingEditQuantizationValue)) {
+            settingsSelect.value = pendingEditQuantizationValue;
+            pendingEditQuantizationValue = null;
+        }
         
         updateEditModelStatusFromData(result);
     } catch (error) {
