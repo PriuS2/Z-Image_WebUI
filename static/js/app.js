@@ -2104,14 +2104,25 @@ async function loadLlmProviders() {
             providerSelect.value = currentProvider;
         }
         
+        // API 키 입력란은 보안상 마스킹(***). 저장되어 있으면 "저장됨"으로만 표시
+        const apiKeyInput = document.getElementById('llmApiKeyInput');
+        if (apiKeyInput) {
+            const hasKey = !!result.llm_api_key;
+            apiKeyInput.value = '';
+            apiKeyInput.placeholder = hasKey ? '저장됨 (변경하려면 새 키를 입력)' : 'API 키를 입력하세요';
+        }
+        
+        const modelInput = document.getElementById('llmModelInput');
+        if (modelInput) modelInput.value = currentModel;
+        
+        const chatModelInput = document.getElementById('chatLlmModelInput');
+        if (chatModelInput) chatModelInput.value = currentModel;
+        
         updateLlmModelList(currentProvider, currentModel);
-        updateChatLlmModelList(currentProvider, currentModel);
         
         updateLlmBaseUrlVisibility(currentProvider);
-        if (result.llm_base_url) {
-            const baseUrlInput = document.getElementById('llmBaseUrlInput');
-            if (baseUrlInput) baseUrlInput.value = result.llm_base_url;
-        }
+        const baseUrlInput = document.getElementById('llmBaseUrlInput');
+        if (baseUrlInput) baseUrlInput.value = result.llm_base_url || '';
         
         defaultTranslatePrompt = result.default_translate_system_prompt || '';
         defaultEnhancePrompt = result.default_enhance_system_prompt || '';
@@ -2158,44 +2169,27 @@ async function loadLlmProviders() {
 }
 
 function updateLlmModelList(providerId, currentModel = '') {
-    const modelSelect = document.getElementById('llmModelSelect');
-    const customInput = document.getElementById('llmModelCustomInput');
-    
-    // 'env' provider는 별도 처리 (updateLlmBaseUrlVisibility에서 처리)
-    if (providerId === 'env') return;
-    
-    if (!modelSelect || !llmProviders[providerId]) return;
-    
+    // 모델은 enum(select) 없이 텍스트 입력만 사용
+    const modelInput = document.getElementById('llmModelInput');
     const provider = llmProviders[providerId];
-    modelSelect.innerHTML = '<option value="">기본 모델</option>';
     
-    provider.models.forEach(model => {
-        const opt = document.createElement('option');
-        opt.value = model;
-        opt.textContent = model;
-        modelSelect.appendChild(opt);
-    });
-    
-    const customOpt = document.createElement('option');
-    customOpt.value = '__custom__';
-    customOpt.textContent = '✏️ 직접 입력...';
-    modelSelect.appendChild(customOpt);
-    
-    const isPresetModel = currentModel === '' || provider.models.includes(currentModel);
-    
-    if (isPresetModel) {
-        modelSelect.value = currentModel;
-        if (customInput) customInput.style.display = 'none';
-    } else {
-        modelSelect.value = '__custom__';
-        if (customInput) {
-            customInput.style.display = 'block';
-            customInput.value = currentModel;
+    if (modelInput) {
+        if (providerId === 'env') {
+            modelInput.placeholder = '.env 설정 사용';
+        } else if (provider?.default_model) {
+            modelInput.placeholder = `비우면 기본값 (${provider.default_model})`;
+        } else {
+            modelInput.placeholder = '모델명을 직접 입력 (비우면 기본값)';
+        }
+        
+        // 초기 로드 시에만 값 세팅 (사용자 입력을 강제로 덮지 않기 위해)
+        if (typeof currentModel === 'string' && modelInput.value === '') {
+            modelInput.value = currentModel;
         }
     }
     
     const infoEl = document.getElementById('llmProviderInfo');
-    if (infoEl) {
+    if (infoEl && provider) {
         let infoText = `💡 ${provider.name}`;
         if (provider.default_model) {
             infoText += ` - 기본 모델: ${provider.default_model}`;
@@ -2207,34 +2201,10 @@ function updateLlmModelList(providerId, currentModel = '') {
     }
 }
 
-function updateChatLlmModelList(providerId, currentModel = '') {
-    const modelSelect = document.getElementById('chatLlmModelSelect');
-    
-    // 'env' provider는 모델 목록 비움
-    if (providerId === 'env') {
-        if (modelSelect) modelSelect.innerHTML = '<option value="">.env 설정</option>';
-        return;
-    }
-    
-    if (!modelSelect || !llmProviders[providerId]) return;
-    
-    const provider = llmProviders[providerId];
-    modelSelect.innerHTML = '<option value="">기본</option>';
-    
-    provider.models.forEach(model => {
-        const opt = document.createElement('option');
-        opt.value = model;
-        opt.textContent = model.length > 20 ? model.substring(0, 18) + '...' : model;
-        opt.title = model;
-        if (model === currentModel) opt.selected = true;
-        modelSelect.appendChild(opt);
-    });
-}
-
 async function saveChatLlmSettings() {
     if (!isAdmin) return;  // 관리자만 저장 가능
     
-    const model = document.getElementById('chatLlmModelSelect')?.value;
+    const model = document.getElementById('chatLlmModelInput')?.value?.trim() || '';
     
     const provider = document.getElementById('llmProviderSelect')?.value || currentLlmProviderId || 'openai';
     currentLlmProviderId = provider;
@@ -2245,11 +2215,10 @@ async function saveChatLlmSettings() {
         });
         
         const settingsProviderSelect = document.getElementById('llmProviderSelect');
-        const settingsModelSelect = document.getElementById('llmModelSelect');
         if (settingsProviderSelect) settingsProviderSelect.value = provider;
-        if (settingsModelSelect) {
-            updateLlmModelList(provider, model);
-        }
+        const settingsModelInput = document.getElementById('llmModelInput');
+        if (settingsModelInput) settingsModelInput.value = model;
+        updateLlmModelList(provider, model);
         updateLlmBaseUrlVisibility(provider);
         
         addMessage('system', `✅ LLM: ${llmProviders[provider]?.name || provider}${model ? ' / ' + model : ''}`);
@@ -2295,14 +2264,7 @@ async function saveLlmSettings() {
     const provider = document.getElementById('llmProviderSelect').value;
     const apiKey = document.getElementById('llmApiKeyInput').value.trim();
     const baseUrl = document.getElementById('llmBaseUrlInput').value.trim();
-    
-    const modelSelect = document.getElementById('llmModelSelect');
-    const customInput = document.getElementById('llmModelCustomInput');
-    let model = modelSelect.value;
-    
-    if (model === '__custom__' && customInput) {
-        model = customInput.value.trim();
-    }
+    const model = document.getElementById('llmModelInput')?.value?.trim() || '';
     
     try {
         await apiCall('/settings', 'POST', {
@@ -2312,9 +2274,10 @@ async function saveLlmSettings() {
             llm_model: model
         });
         
-        const chatModelSelect = document.getElementById('chatLlmModelSelect');
-        if (chatModelSelect) updateChatLlmModelList(provider, model);
+        const chatModelInput = document.getElementById('chatLlmModelInput');
+        if (chatModelInput) chatModelInput.value = model;
         currentLlmProviderId = provider;
+        updateLlmModelList(provider, model);
         
         addMessage('system', `✅ LLM 설정 저장됨 (${llmProviders[provider]?.name || provider}${model ? ' / ' + model : ''})`);
     } catch (error) {
@@ -3106,29 +3069,13 @@ document.addEventListener('DOMContentLoaded', () => {
         llmProviderSelect.addEventListener('change', (e) => {
             currentLlmProviderId = e.target.value;
             updateLlmModelList(e.target.value);
-            updateChatLlmModelList(e.target.value);
             updateLlmBaseUrlVisibility(e.target.value);
         });
     }
     
-    // LLM 모델 선택 - 직접 입력 토글
-    const llmModelSelect = document.getElementById('llmModelSelect');
-    const llmModelCustomInput = document.getElementById('llmModelCustomInput');
-    if (llmModelSelect && llmModelCustomInput) {
-        llmModelSelect.addEventListener('change', (e) => {
-            if (e.target.value === '__custom__') {
-                llmModelCustomInput.style.display = 'block';
-                llmModelCustomInput.focus();
-            } else {
-                llmModelCustomInput.style.display = 'none';
-                llmModelCustomInput.value = '';
-            }
-        });
-    }
-    
-    const chatLlmModelSelect = document.getElementById('chatLlmModelSelect');
-    if (chatLlmModelSelect) {
-        chatLlmModelSelect.addEventListener('change', () => {
+    const chatLlmModelInput = document.getElementById('chatLlmModelInput');
+    if (chatLlmModelInput) {
+        chatLlmModelInput.addEventListener('change', () => {
             if (isAdmin) saveChatLlmSettings();
         });
     }

@@ -137,9 +137,7 @@
                             <!-- LLM 모델 선택 (번역/향상용) -->
                             <div class="llm-quick-select">
                                 <i class="ri-robot-line"></i>
-                                <select id="chatLlmModelSelect" title="번역/향상에 사용할 모델">
-                                    <option value="">기본</option>
-                                </select>
+                                <input type="text" id="chatLlmModelInput" placeholder="번역/향상 모델 (비우면 기본값)" title="번역/향상에 사용할 모델 (비우면 기본값)">
                             </div>
                         </div>
                         
@@ -602,11 +600,7 @@
                     <div class="setting-group">
                         <label>모델 (비워두면 기본값 사용)</label>
                         <div class="model-input-wrapper">
-                            <select id="llmModelSelect">
-                                <option value="">기본 모델</option>
-                                <option value="__custom__">✏️ 직접 입력...</option>
-                            </select>
-                            <input type="text" id="llmModelCustomInput" placeholder="모델명을 직접 입력 (예: gpt-4o)" style="display: none;">
+                            <input type="text" id="llmModelInput" placeholder="모델명을 직접 입력 (비우면 기본값)" title="모델명을 직접 입력 (비우면 기본값)">
                         </div>
                     </div>
                     <div class="setting-info" id="llmProviderInfo">
