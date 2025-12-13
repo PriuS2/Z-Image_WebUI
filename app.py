@@ -8,6 +8,7 @@ import base64
 import random
 import gc
 import time
+import inspect
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -35,6 +36,7 @@ from config.defaults import (
     EDIT_QUANTIZATION_OPTIONS,
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
+    MODELS_DIR,
     SERVER_HOST,
     SERVER_PORT,
     SERVER_RELOAD,
@@ -116,8 +118,9 @@ async def auto_unload_checker():
                 pipe = None
                 current_model = None
                 
-                # GPU 캐시 정리
-                gpu_monitor.clear_cache()
+                # GPU 캐시 정리 (생성 모델이 올려져 있던 디바이스만 정리)
+                # - 편집 모델이 다른 GPU에 올라간 경우까지 영향을 주지 않도록 범위를 제한한다.
+                gpu_monitor.clear_cache(device)
                 gc.collect()
                 
                 # 클라이언트에게 알림
@@ -196,7 +199,6 @@ class GenerateRequest(BaseModel):
 
 class ModelLoadRequest(BaseModel):
     quantization: str = "BF16 (기본, 최고품질)"
-    model_path: str = ""
     cpu_offload: bool = False
     target_device: str = "auto"  # 관리자 전용: "auto", "cuda:0", "cuda:1", "cpu", "mps"
 
@@ -208,8 +210,13 @@ class SettingsRequest(BaseModel):
     # LLM Provider 설정
     llm_provider: str = ""
     llm_api_key: str = ""
-    llm_base_url: str = ""
-    llm_model: str = ""
+    # NOTE:
+    # - /api/settings 는 다양한 설정(자동 언로드 등) 저장에도 재사용된다.
+    # - 아래 값들을 기본값 ""로 두면, 요청 바디에 해당 필드가 없어도 Pydantic이 ""를 채워넣어
+    #   저장 시 기존 값이 ""로 덮여서 "설정이 풀리는" 문제가 발생한다.
+    # - 따라서 Optional로 두고, 실제로 값이 전달된 경우에만(= None이 아닐 때만) 저장한다.
+    llm_base_url: Optional[str] = None
+    llm_model: Optional[str] = None
     # 시스템 프롬프트 (번역/향상)
     translate_system_prompt: Optional[str] = None
     enhance_system_prompt: Optional[str] = None
@@ -219,6 +226,13 @@ class SettingsRequest(BaseModel):
     # 편집 모델 자동 언로드 설정
     edit_auto_unload_enabled: Optional[bool] = None
     edit_auto_unload_timeout: Optional[int] = None
+
+    # 모델 설정 (관리자 전용)
+    quantization: Optional[str] = None
+    cpu_offload: Optional[bool] = None
+    # 편집 모델 설정 (관리자 전용)
+    edit_quantization: Optional[str] = None
+    edit_cpu_offload: Optional[bool] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -323,16 +337,31 @@ def get_vram_info() -> str:
     return gpu_monitor.get_vram_summary()
 
 
-async def get_session_from_request(request: Request) -> SessionInfo:
-    """요청에서 세션 가져오기 또는 생성"""
+async def get_session_from_request(request: Request, create_if_missing: bool = False) -> Optional[SessionInfo]:
+    """
+    요청에서 세션 가져오기
+    - 기본: **비로그인(쿠키 없음/유효하지 않음/메모리에 없음)에서는 세션을 생성하지 않음**
+    - 로그인/회원가입 등 일부 엔드포인트에서만 create_if_missing=True로 세션 생성
+    """
     session_id = request.cookies.get(SessionManager.COOKIE_NAME)
-    session = await session_manager.get_or_create_session(session_id)
-    return session
+
+    # 쿠키가 있고 메모리에 살아있는 세션이면 반환
+    if session_id and session_manager.validate_session_id(session_id):
+        session = session_manager.get_session(session_id)
+        if session:
+            session.update_activity()
+            return session
+
+    # 필요한 경우에만 새 세션 생성
+    if create_if_missing:
+        return await session_manager.get_or_create_session(session_id)
+
+    return None
 
 
-def require_auth(session: SessionInfo) -> None:
+def require_auth(session: Optional[SessionInfo]) -> None:
     """인증 필수 체크 - 로그인하지 않으면 예외 발생"""
-    if not session.is_authenticated:
+    if not session or not session.is_authenticated:
         raise HTTPException(401, "로그인이 필요합니다.")
 
 
@@ -343,8 +372,10 @@ def require_admin(request: Request) -> None:
         raise HTTPException(403, "관리자 권한이 필요합니다.")
 
 
-def set_session_cookie(response: Response, session: SessionInfo):
+def set_session_cookie(response: Response, session: Optional[SessionInfo]):
     """응답에 세션 쿠키 설정"""
+    if not session:
+        return
     response.set_cookie(
         key=SessionManager.COOKIE_NAME,
         value=session.session_id,
@@ -352,6 +383,11 @@ def set_session_cookie(response: Response, session: SessionInfo):
         httponly=True,
         samesite="lax"
     )
+
+
+def clear_session_cookie(response: Response):
+    """세션 쿠키 제거"""
+    response.delete_cookie(key=SessionManager.COOKIE_NAME)
 
 
 # ============= 웹소켓 연결 관리 (세션별) =============
@@ -415,6 +451,23 @@ class SessionConnectionManager:
     def get_session_count(self) -> int:
         """연결된 세션 수"""
         return len(self._connections)
+
+    def get_connected_keys(self) -> List[str]:
+        """현재 연결된 키 목록 (현재는 user_{id} 형태)"""
+        return list(self._connections.keys())
+
+    async def disconnect_key(self, key: str) -> int:
+        """특정 키(user_{id})의 모든 WebSocket 연결 종료"""
+        async with self._lock:
+            connections = list(self._connections.get(key, []))
+        closed = 0
+        for ws in connections:
+            try:
+                await ws.close(code=4000)
+                closed += 1
+            except Exception:
+                pass
+        return closed
     
     def get_session_id(self, websocket: WebSocket) -> Optional[str]:
         """WebSocket의 세션 ID 가져오기"""
@@ -422,6 +475,47 @@ class SessionConnectionManager:
 
 
 ws_manager = SessionConnectionManager()
+
+
+def _format_bytes(total_size: int) -> str:
+    """바이트를 사람이 읽기 쉬운 단위로 변환"""
+    if total_size < 1024:
+        return f"{total_size} B"
+    if total_size < 1024 * 1024:
+        return f"{total_size / 1024:.1f} KB"
+    if total_size < 1024 * 1024 * 1024:
+        return f"{total_size / (1024 * 1024):.1f} MB"
+    return f"{total_size / (1024 * 1024 * 1024):.2f} GB"
+
+
+def _get_data_size_by_data_id(data_id: str) -> str:
+    """data_id(user_{id}) 기준 데이터 크기 계산 (세션 화면용)"""
+    from config.defaults import DATA_DIR, OUTPUTS_DIR
+    total_size = 0
+    sessions_dir = DATA_DIR / "sessions" / data_id
+    outputs_dir = OUTPUTS_DIR / data_id
+
+    for d in (sessions_dir, outputs_dir):
+        if d.exists():
+            for f in d.rglob("*"):
+                if f.is_file():
+                    try:
+                        total_size += f.stat().st_size
+                    except Exception:
+                        pass
+    return _format_bytes(total_size)
+
+
+def _parse_user_id_from_data_id(data_id: str) -> Optional[int]:
+    """user_123 -> 123"""
+    if not isinstance(data_id, str):
+        return None
+    if not data_id.startswith("user_"):
+        return None
+    try:
+        return int(data_id.split("_", 1)[1])
+    except Exception:
+        return None
 
 
 # ============= 큐 콜백 함수들 =============
@@ -461,6 +555,7 @@ async def execute_generation(request_data: dict) -> dict:
     global pipe, current_model
     
     session_id = request_data.get("session_id")
+    # 계정 단위(data_id)로 실행 시 SessionInfo가 없을 수 있으므로 옵션 처리
     session = session_manager.get_session(session_id)
     
     if pipe is None:
@@ -510,7 +605,11 @@ async def execute_generation(request_data: dict) -> dict:
     if session:
         outputs_dir = session.get_outputs_dir()
     else:
-        outputs_dir = OUTPUTS_DIR
+        # session_id가 user_{id} 형태면 outputs/user_{id}에 저장
+        if isinstance(session_id, str) and session_id.startswith("user_"):
+            outputs_dir = OUTPUTS_DIR / session_id
+        else:
+            outputs_dir = OUTPUTS_DIR
     
     images = []
     for i in range(num_images):
@@ -527,9 +626,78 @@ async def execute_generation(request_data: dict) -> dict:
         await asyncio.sleep(0.05)
         
         generator = torch.Generator(device).manual_seed(current_seed)
+        loop = asyncio.get_running_loop()
+        last_sent_step = {"value": -1}  # 클로저에서 mutable로 사용
+
+        def _send_generation_progress_from_thread(current_step: int, total_steps: int):
+            """diffusers 콜백(별도 스레드)에서 WebSocket 진행상황 전송"""
+            # 너무 잦은 중복 전송 방지
+            if current_step == last_sent_step["value"]:
+                return
+            last_sent_step["value"] = current_step
+
+            # 전체 진행률 계산 (이미지 + 스텝 기준)
+            image_progress = (i) / num_images
+            step_progress = (current_step / max(total_steps, 1)) / num_images
+            overall_progress = int((image_progress + step_progress) * 100)
+
+            payload = {
+                "type": "generation_progress",
+                "current_image": i + 1,
+                "total_images": num_images,
+                "current_step": current_step,
+                "total_steps": total_steps,
+                "progress": overall_progress,
+            }
+
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    ws_manager.send_to_session(session_id, payload),
+                    loop
+                )
+                # 예외가 발생해도 작업을 깨지 않도록 흡수
+                fut.add_done_callback(lambda f: f.exception())
+            except Exception:
+                pass
         
         # 동기 pipe 호출을 스레드에서 실행
         def run_pipe():
+            call_sig = inspect.signature(pipe.__call__)
+
+            # diffusers 최신: callback_on_step_end 지원
+            if "callback_on_step_end" in call_sig.parameters:
+                def callback_on_step_end(_pipeline, step_index, _timestep, callback_kwargs):
+                    # step_index는 0-based인 경우가 대부분
+                    _send_generation_progress_from_thread(step_index + 1, steps)
+                    return callback_kwargs
+
+                return pipe(
+                    prompt=final_prompt,
+                    height=height,
+                    width=width,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator,
+                    callback_on_step_end=callback_on_step_end,
+                ).images[0]
+
+            # diffusers 구버전: callback/callback_steps 지원
+            if "callback" in call_sig.parameters:
+                def callback(step_index, _timestep, _latents):
+                    _send_generation_progress_from_thread(step_index + 1, steps)
+
+                return pipe(
+                    prompt=final_prompt,
+                    height=height,
+                    width=width,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator,
+                    callback=callback,
+                    callback_steps=1,
+                ).images[0]
+
+            # 콜백 미지원(예외 케이스): 기존 동작
             return pipe(
                 prompt=final_prompt,
                 height=height,
@@ -565,7 +733,11 @@ async def execute_generation(request_data: dict) -> dict:
             "base64": image_to_base64(image),
             "filename": filename,
             "seed": current_seed,
-            "path": f"/outputs/{session.data_id}/{filename}" if session else f"/outputs/{filename}"
+            "path": (
+                f"/outputs/{session.data_id}/{filename}"
+                if session
+                else (f"/outputs/{session_id}/{filename}" if isinstance(session_id, str) and session_id.startswith("user_") else f"/outputs/{filename}")
+            )
         })
         
         # 각 이미지 생성 후 메모리 정리 (여러 장 생성 시 OOM 방지)
@@ -582,8 +754,12 @@ async def execute_generation(request_data: dict) -> dict:
     if session:
         history_mgr = get_history_manager_sync(session.data_id)
     else:
-        from utils.history import history_manager
-        history_mgr = history_manager
+        # 계정 단위로 실행된 경우(user_{id})에는 그 계정 히스토리에 저장
+        if isinstance(session_id, str) and session_id.startswith("user_"):
+            history_mgr = get_history_manager_sync(session_id)
+        else:
+            from utils.history import history_manager
+            history_mgr = history_manager
     
     history_entry = history_mgr.add(
         prompt=prompt,
@@ -660,10 +836,11 @@ async def home(request: Request):
     session = await get_session_from_request(request)
     
     # 로그인하지 않은 경우 로그인 페이지로 리다이렉트
-    if not session.is_authenticated:
+    if not session or not session.is_authenticated:
         from fastapi.responses import RedirectResponse
         response = RedirectResponse(url="/login", status_code=302)
-        set_session_cookie(response, session)
+        # 비로그인 세션은 생성/유지하지 않음 (쿠키도 제거)
+        clear_session_cookie(response)
         return response
     
     response = templates.TemplateResponse("index.html", {
@@ -684,14 +861,15 @@ async def login_page(request: Request):
     session = await get_session_from_request(request)
     
     # 이미 로그인된 경우 메인 페이지로 리다이렉트
-    if session.is_authenticated:
+    if session and session.is_authenticated:
         from fastapi.responses import RedirectResponse
         response = RedirectResponse(url="/", status_code=302)
         set_session_cookie(response, session)
         return response
     
     response = templates.TemplateResponse("login.html", {"request": request})
-    set_session_cookie(response, session)
+    # 비로그인에서는 세션/쿠키를 만들지 않음
+    clear_session_cookie(response)
     
     return response
 
@@ -716,7 +894,8 @@ async def get_status(request: Request):
         "upscaler_available": REALESRGAN_AVAILABLE,
         "queue_length": queue_status["queue_length"],
         "connected_users": ws_manager.get_session_count(),
-        "session_id": session.session_id,
+        # 프론트 호환 필드: 로그인 시 계정 키(user_{id}), 비로그인 시 None
+        "session_id": (session.data_id if session else None),
         "is_admin": is_admin,
     }
     
@@ -745,21 +924,30 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
         # GPU 선택 (관리자만 특정 GPU 지정 가능)
         target_device = model_request.target_device
         client_host = request.client.host if request.client else None
+        is_admin = is_localhost(client_host)
 
         # UI가 target_device="auto"로 보내는 경우가 많아서,
         # 관리자가 설정한 기본 GPU(설정 -> GPU 설정/모니터링)를 자동 적용한다.
         if target_device == "auto":
             target_device = settings.get("generation_gpu", DEFAULT_GPU_SETTINGS["generation_gpu"])
 
-        if not is_localhost(client_host) and target_device != "auto":
+        if not is_admin and target_device != "auto":
             # 관리자가 아닌 경우 auto로 강제
             target_device = "auto"
         
         device = get_device(target_device)
-        quant_info = QUANTIZATION_OPTIONS.get(model_request.quantization)
+
+        # 양자화/CPU 오프로딩은 관리자만 변경 가능
+        requested_quantization = model_request.quantization
+        requested_cpu_offload = model_request.cpu_offload
+        if not is_admin:
+            requested_quantization = settings.get("quantization", requested_quantization)
+            requested_cpu_offload = settings.get("cpu_offload", requested_cpu_offload)
+
+        quant_info = QUANTIZATION_OPTIONS.get(requested_quantization)
         
         if not quant_info:
-            raise HTTPException(400, f"지원하지 않는 양자화: {model_request.quantization}")
+            raise HTTPException(400, f"지원하지 않는 양자화: {requested_quantization}")
         
         repo_id = quant_info["repo"]
         dtype = quant_info["type"]
@@ -799,7 +987,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
                     hf_hub_download,
                     repo_id=repo_id, 
                     filename=filename,
-                    cache_dir=model_request.model_path if model_request.model_path else None
+                    cache_dir=str(MODELS_DIR)
                 )
                 
                 # 3단계: GGUF Transformer 로드
@@ -848,9 +1036,8 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
                 
                 load_kwargs = {
                     "torch_dtype": torch.bfloat16,
+                    "cache_dir": str(MODELS_DIR),
                 }
-                if model_request.model_path:
-                    load_kwargs["cache_dir"] = model_request.model_path
                 
                 await ws_manager.broadcast({
                     "type": "model_progress", 
@@ -877,7 +1064,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             })
             await asyncio.sleep(0.1)
             
-            if model_request.cpu_offload:
+            if requested_cpu_offload:
                 await asyncio.to_thread(pipe.enable_model_cpu_offload)
                 await ws_manager.broadcast({
                     "type": "model_progress", 
@@ -889,7 +1076,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             else:
                 await asyncio.to_thread(pipe.to, device)
             
-            current_model = model_request.quantization
+            current_model = requested_quantization
             
             # GPU 모니터에 모델 등록
             gpu_monitor.register_model("Z-Image-Turbo", device)
@@ -964,8 +1151,8 @@ async def unload_model(request: Request):
                 "detail": ""
             })
             
-            # GPU 캐시 정리
-            gpu_monitor.clear_cache()
+            # GPU 캐시 정리 (생성 모델 디바이스만 정리)
+            gpu_monitor.clear_cache(device)
             gc.collect()
             
             await ws_manager.broadcast({
@@ -994,6 +1181,7 @@ async def generate_image(request: Request, gen_request: GenerateRequest):
     update_activity()
     
     session = await get_session_from_request(request)
+    require_auth(session)
     
     if pipe is None:
         raise HTTPException(400, "모델이 로드되지 않았습니다.")
@@ -1002,16 +1190,18 @@ async def generate_image(request: Request, gen_request: GenerateRequest):
         raise HTTPException(400, "프롬프트를 입력해주세요.")
     
     # Rate limit 체크
+    # 계정 단위로 제한(세션 단위 구분 제거)
     exceeded, count = session_manager.check_rate_limit(session.session_id)
     if exceeded:
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "warning",
             "content": f"⚠️ 요청이 너무 많습니다. (분당 {count}회) 잠시 후 다시 시도해주세요."
         })
     
     # 요청 데이터 준비
     request_data = {
-        "session_id": session.session_id,
+        # 실행/알림/큐 모두 계정(data_id) 단위로 처리
+        "session_id": session.data_id,
         "prompt": gen_request.prompt,
         "korean_prompt": gen_request.korean_prompt,
         "width": gen_request.width,
@@ -1024,18 +1214,18 @@ async def generate_image(request: Request, gen_request: GenerateRequest):
     }
     
     # 큐에 추가
-    item_id, position = await generation_queue.add_to_queue(session.session_id, request_data)
+    item_id, position = await generation_queue.add_to_queue(session.data_id, request_data)
     
     # 큐 상태 알림
     if position > 1:
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "queue_status",
             "status": "queued",
             "position": position,
             "message": f"⏳ 대기열에 추가되었습니다. (순서: {position})"
         })
     else:
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "queue_status",
             "status": "processing",
             "position": 0,
@@ -1321,6 +1511,24 @@ async def save_settings(request: Request, settings_request: SettingsRequest):
     if settings_request.edit_auto_unload_timeout is not None:
         timeout = max(1, min(1440, settings_request.edit_auto_unload_timeout))
         settings.set("edit_auto_unload_timeout", timeout)
+
+    # 모델 설정 (관리자 전용)
+    if settings_request.quantization is not None:
+        if settings_request.quantization not in QUANTIZATION_OPTIONS:
+            raise HTTPException(400, f"지원하지 않는 양자화: {settings_request.quantization}")
+        settings.set("quantization", settings_request.quantization)
+
+    if settings_request.cpu_offload is not None:
+        settings.set("cpu_offload", bool(settings_request.cpu_offload))
+
+    # 편집 모델 설정 (관리자 전용)
+    if settings_request.edit_quantization is not None:
+        if settings_request.edit_quantization not in EDIT_QUANTIZATION_OPTIONS:
+            raise HTTPException(400, f"지원하지 않는 편집 양자화: {settings_request.edit_quantization}")
+        settings.set("edit_quantization", settings_request.edit_quantization)
+
+    if settings_request.edit_cpu_offload is not None:
+        settings.set("edit_cpu_offload", bool(settings_request.edit_cpu_offload))
     
     return {"success": True}
 
@@ -1388,6 +1596,11 @@ async def get_settings(request: Request):
         # 기타 설정
         "output_path": str(settings.get("output_path", OUTPUTS_DIR)),
         "filename_pattern": settings.get("filename_pattern", "{date}_{time}_{seed}"),
+        # 모델 설정 (관리자만 변경 가능 - 모든 사용자에게는 현재 값만 제공)
+        "quantization": settings.get("quantization", "BF16 (기본, 최고품질)"),
+        "cpu_offload": settings.get("cpu_offload", False),
+        "edit_quantization": settings.get("edit_quantization", "BF16 (기본, 최고품질)"),
+        "edit_cpu_offload": settings.get("edit_cpu_offload", True),
         "quantization_options": list(QUANTIZATION_OPTIONS.keys()),
         "resolution_presets": RESOLUTION_PRESETS,
         # 자동 언로드 설정
@@ -1485,7 +1698,8 @@ async def reset_session_prompts(request: Request):
 @app.post("/api/auth/register")
 async def register(request: Request, data: RegisterRequest):
     """회원가입"""
-    session = await get_session_from_request(request)
+    # 회원가입은 세션(로그인 쿠키) 발급이 필요하므로 생성 허용
+    session = await get_session_from_request(request, create_if_missing=True)
     
     # 비밀번호 확인
     if data.password != data.password_confirm:
@@ -1509,7 +1723,8 @@ async def register(request: Request, data: RegisterRequest):
 @app.post("/api/auth/login")
 async def login(request: Request, data: LoginRequest):
     """로그인"""
-    session = await get_session_from_request(request)
+    # 로그인은 세션(로그인 쿠키) 발급이 필요하므로 생성 허용
+    session = await get_session_from_request(request, create_if_missing=True)
     
     # 인증
     success, message, user = auth_manager.authenticate(data.username, data.password)
@@ -1534,14 +1749,15 @@ async def logout(request: Request):
     """로그아웃"""
     session = await get_session_from_request(request)
     
-    if session.is_authenticated:
+    if session and session.is_authenticated:
         await session_manager.logout_session(session.session_id)
     
     response = JSONResponse(content={
         "success": True,
         "message": "로그아웃되었습니다."
     })
-    set_session_cookie(response, session)
+    # 로그아웃은 쿠키 제거
+    clear_session_cookie(response)
     return response
 
 
@@ -1554,12 +1770,13 @@ async def get_current_user(request: Request):
     client_host = request.client.host if request.client else None
     is_admin = is_localhost(client_host)
     
-    if not session.is_authenticated:
+    if not session or not session.is_authenticated:
         response = JSONResponse(content={
             "authenticated": False,
             "user": None,
             "is_admin": is_admin
         })
+        clear_session_cookie(response)
     else:
         user = auth_manager.get_user_by_id(session.user_id)
         response = JSONResponse(content={
@@ -1570,8 +1787,7 @@ async def get_current_user(request: Request):
             },
             "is_admin": is_admin
         })
-    
-    set_session_cookie(response, session)
+        set_session_cookie(response, session)
     return response
 
 
@@ -1652,20 +1868,52 @@ async def admin_delete_user(request: Request, user_id: int):
 
 @app.get("/api/admin/sessions")
 async def get_all_sessions(request: Request):
-    """모든 세션 목록 (관리자 전용)"""
+    """접속 사용자(계정) 목록 (관리자 전용)"""
     require_admin(request)
-    
-    sessions = session_manager.get_all_sessions()
-    return {"sessions": sessions}
+
+    users = []
+    # WebSocket 연결 키는 현재 계정(data_id)로 통일되어 있음
+    for data_id in sorted(ws_manager.get_connected_keys()):
+        user_id = _parse_user_id_from_data_id(data_id)
+        user = auth_manager.get_user_by_id(user_id) if user_id is not None else None
+        username = user.username if user else None
+
+        # last_activity는 (있다면) 해당 유저의 활성 세션에서 가져옴
+        session = session_manager.get_session_by_user(user_id) if user_id is not None else None
+        last_activity = session.last_activity if session else None
+
+        users.append({
+            "data_id": data_id,           # user_{id}
+            "user_id": user_id,
+            "username": username,
+            "last_activity": last_activity,
+            "data_size": _get_data_size_by_data_id(data_id),
+            "connected": True,
+        })
+
+    return {"users": users}
 
 
 @app.delete("/api/admin/sessions/{session_id}")
 async def delete_session(session_id: str, request: Request):
-    """세션 삭제 (관리자 전용)"""
+    """사용자(계정) 접속 종료/정리 (관리자 전용)"""
     require_admin(request)
-    
-    success = await session_manager.delete_session(session_id)
-    return {"success": success}
+
+    # 프론트에서 넘어오는 값은 이제 data_id(user_{id})로 사용
+    data_id = session_id
+    user_id = _parse_user_id_from_data_id(data_id)
+
+    # WebSocket 강제 종료 + 대기열 제거
+    closed = await ws_manager.disconnect_key(data_id)
+    await generation_queue.remove_session_items(data_id)
+
+    # 세션 매핑 정리(가능한 경우)
+    if user_id is not None:
+        existing = session_manager.get_session_by_user(user_id)
+        if existing:
+            await session_manager.delete_session(existing.session_id)
+
+    return {"success": True, "closed_connections": closed}
 
 
 # ============= GPU 관리 API (관리자 전용) =============
@@ -1751,14 +1999,16 @@ async def get_available_devices(request: Request):
 async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str] = Cookie(default=None)):
     """웹소켓 연결 (세션별)"""
     # 세션 가져오기
-    session = await session_manager.get_or_create_session(z_image_session)
+    # 비로그인에서 세션을 만들지 않기 위해 "기존 세션 조회"만 시도
+    session = session_manager.get_session(z_image_session) if z_image_session else None
     
     # 로그인하지 않은 경우 연결 거부
-    if not session.is_authenticated:
+    if not session or not session.is_authenticated:
         await websocket.close(code=4001, reason="로그인이 필요합니다.")
         return
     
-    await ws_manager.connect(websocket, session.session_id)
+    # 계정(data_id) 단위로 WebSocket 룸을 통일 (세션 구분 제거)
+    await ws_manager.connect(websocket, session.data_id)
     update_activity()
     
     try:
@@ -1766,7 +2016,8 @@ async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str
         await websocket.send_json({
             "type": "connected",
             "content": "서버에 연결되었습니다.",
-            "session_id": session.session_id,
+            # 프론트에서 쓰는 값도 계정 키로 통일
+            "session_id": session.data_id,
             "connected_users": ws_manager.get_session_count()
         })
         
@@ -1827,6 +2078,7 @@ async def get_edit_status(request: Request):
     update_edit_activity()
     
     session = await get_session_from_request(request)
+    require_auth(session)
     client_host = request.client.host if request.client else None
     is_admin = is_localhost(client_host)
     
@@ -1835,9 +2087,12 @@ async def get_edit_status(request: Request):
         "current_model": longcat_edit_manager.current_model,
         "current_quantization": longcat_edit_manager.current_quantization,
         "cpu_offload_enabled": longcat_edit_manager.cpu_offload_enabled,
+        # 저장된(기본) 편집 모델 설정값 - 새로고침/재시작 후 UI에서 유지되도록 제공
+        "saved_edit_quantization": settings.get("edit_quantization", "BF16 (기본, 최고품질)"),
+        "saved_edit_cpu_offload": settings.get("edit_cpu_offload", True),
         "device": longcat_edit_manager.device or longcat_edit_manager.get_device(),
         "vram": get_vram_info(),
-        "session_id": session.session_id,
+        "session_id": session.data_id,
         "is_admin": is_admin,
         "quantization_options": list(EDIT_QUANTIZATION_OPTIONS.keys()),
         # 양자화 옵션 상세 정보 (예상 VRAM 포함)
@@ -1868,13 +2123,14 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
     # GPU 선택 (관리자만 특정 GPU 지정 가능)
     target_device = model_request.target_device
     client_host = request.client.host if request.client else None
+    is_admin = is_localhost(client_host)
 
     # UI가 target_device="auto"로 보내는 경우가 많아서,
     # 관리자가 설정한 편집 기본 GPU를 자동 적용한다.
     if target_device == "auto":
         target_device = settings.get("edit_gpu", DEFAULT_GPU_SETTINGS["edit_gpu"])
 
-    if not is_localhost(client_host) and target_device != "auto":
+    if not is_admin and target_device != "auto":
         # 관리자가 아닌 경우 auto로 강제
         target_device = "auto"
     
@@ -1897,9 +2153,16 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 "stage": "init"
             })
             
+            # 양자화/CPU 오프로딩은 관리자만 변경 가능
+            requested_quantization = model_request.quantization
+            requested_cpu_offload = model_request.cpu_offload
+            if not is_admin:
+                requested_quantization = settings.get("edit_quantization", requested_quantization)
+                requested_cpu_offload = settings.get("edit_cpu_offload", requested_cpu_offload)
+
             success, message = await longcat_edit_manager.load_model(
-                quantization=model_request.quantization,
-                cpu_offload=model_request.cpu_offload,
+                quantization=requested_quantization,
+                cpu_offload=requested_cpu_offload,
                 model_path=model_request.model_path if model_request.model_path else None,
                 target_device=target_device,
                 progress_callback=progress_callback
@@ -1995,6 +2258,7 @@ async def edit_image(
     update_edit_activity()
     
     session = await get_session_from_request(request)
+    require_auth(session)
     
     if not longcat_edit_manager.is_loaded:
         raise HTTPException(400, "편집 모델이 로드되지 않았습니다.")
@@ -2006,32 +2270,52 @@ async def edit_image(
     auto_translate_bool = auto_translate.lower() in ("true", "1", "yes")
     
     try:
+        # 이번 편집 요청의 고유 ID (입력/참조 이미지 파일명 등에 사용)
+        run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        
+        # 세션별 출력 디렉토리 (입력/참조/결과 모두 여기 저장)
+        outputs_dir = session.get_outputs_dir()
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        
         # 이미지 로드
         image_data = await image.read()
         pil_image = Image.open(BytesIO(image_data)).convert("RGB")
         
+        # 업로드된 원본 이미지를 출력 폴더에 저장 (편집기록에서 원본 확인용)
+        original_filename = f"edit_input_{run_id}.png"
+        original_output_path = outputs_dir / original_filename
+        pil_image.save(original_output_path, format="PNG")
+        original_image_url = f"/outputs/{session.data_id}/{original_filename}"
+        
         # 참조 이미지 로드 (있으면)
         ref_image = None
+        reference_image_url = None
         if reference_image:
             ref_data = await reference_image.read()
             ref_image = Image.open(BytesIO(ref_data)).convert("RGB")
+            
+            # 참조 이미지도 저장 (추후 편집기록 확장/디버깅용)
+            reference_filename = f"edit_reference_{run_id}.png"
+            reference_output_path = outputs_dir / reference_filename
+            ref_image.save(reference_output_path, format="PNG")
+            reference_image_url = f"/outputs/{session.data_id}/{reference_filename}"
         
         # 프롬프트 번역
         final_prompt = prompt
         if auto_translate_bool and edit_translator.is_korean(prompt):
-            await ws_manager.send_to_session(session.session_id, {
+            await ws_manager.send_to_session(session.data_id, {
                 "type": "edit_system",
                 "content": "🌐 편집 지시어 번역 중..."
             })
             final_prompt, success = edit_translator.translate(prompt)
             if not success:
-                await ws_manager.send_to_session(session.session_id, {
+                await ws_manager.send_to_session(session.data_id, {
                     "type": "edit_system",
                     "content": "⚠️ 번역 실패, 원문 사용"
                 })
         
         # 편집 시작 메시지
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "edit_system",
             "content": "🎨 이미지 편집 중..."
         })
@@ -2043,7 +2327,7 @@ async def edit_image(
             step_progress = current_step / total_steps / total_images
             overall_progress = int((image_progress + step_progress) * 100)
             
-            await ws_manager.send_to_session(session.session_id, {
+            await ws_manager.send_to_session(session.data_id, {
                 "type": "edit_progress",
                 "current_image": current_image,
                 "total_images": total_images,
@@ -2054,7 +2338,7 @@ async def edit_image(
         
         # 상태 메시지 콜백 정의 (참조 이미지 분석 등)
         async def edit_status_callback(message: str):
-            await ws_manager.send_to_session(session.session_id, {
+            await ws_manager.send_to_session(session.data_id, {
                 "type": "edit_system",
                 "content": message
             })
@@ -2074,10 +2358,6 @@ async def edit_image(
         
         if not success:
             raise HTTPException(500, message)
-        
-        # 세션별 출력 디렉토리
-        outputs_dir = session.get_outputs_dir()
-        outputs_dir.mkdir(parents=True, exist_ok=True)
         
         # 결과 저장 및 반환
         images_response = []
@@ -2126,17 +2406,19 @@ async def edit_image(
                 "guidance_scale": guidance_scale,
                 "seed": results[0]["seed"] if results else -1,
             },
+            original_image_path=original_image_url,
+            reference_image_path=reference_image_url,
             result_image_paths=[img["path"] for img in images_response]
         )
         
         # 완료 메시지
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "edit_system",
             "content": f"✅ 편집 완료! (시드: {results[0]['seed'] if results else 'N/A'})"
         })
         
         # 결과 전송
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "edit_result",
             "images": images_response,
             "seed": results[0]["seed"] if results else -1,
@@ -2153,7 +2435,7 @@ async def edit_image(
         }
         
     except Exception as e:
-        await ws_manager.send_to_session(session.session_id, {
+        await ws_manager.send_to_session(session.data_id, {
             "type": "error",
             "content": f"❌ 편집 오류: {str(e)}"
         })

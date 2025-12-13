@@ -79,16 +79,6 @@
                                     <span class="status-dot offline"></span>
                                     <span class="status-text">모델 미로드</span>
                                 </div>
-                                <div class="chat-model-select">
-                                    <select id="chatQuantizationSelect" title="양자화 옵션 선택">
-                                        <option value="BF16 (기본, 최고품질)">BF16 (기본)</option>
-                                    </select>
-                                </div>
-                                <label class="cpu-offload-label" title="VRAM이 부족할 때 체크하세요. RAM을 사용하여 VRAM 사용량을 줄입니다.">
-                                    <input type="checkbox" id="chatCpuOffloadCheck">
-                                    <span>CPU 오프로딩</span>
-                                    <span class="tooltip-icon" data-tooltip="VRAM이 부족할 때 사용하세요. 모델 일부를 RAM에 올려 VRAM 사용량을 줄입니다. 속도는 약간 느려질 수 있습니다.">?</span>
-                                </label>
                             </div>
                             <div class="model-actions">
                                 <button class="btn btn-sm btn-primary" id="btnChatLoadModel" title="모델 로드">
@@ -143,17 +133,6 @@
                             <button class="option-btn" id="btnEnhance" title="AI 향상">
                                 <i class="ri-magic-line"></i>
                             </button>
-                            
-                            <!-- LLM 모델 선택 (번역/향상용) -->
-                            <div class="llm-quick-select">
-                                <i class="ri-robot-line"></i>
-                                <select id="chatLlmProviderSelect" title="번역/향상에 사용할 LLM Provider">
-                                    <option value="openai">OpenAI</option>
-                                </select>
-                                <select id="chatLlmModelSelect" title="사용할 모델">
-                                    <option value="">기본</option>
-                                </select>
-                            </div>
                         </div>
                         
                         <div class="input-row korean-input-row">
@@ -236,15 +215,6 @@
                                     <span class="status-dot offline"></span>
                                     <span class="status-text">편집 모델 미로드</span>
                                 </div>
-                                <div class="chat-model-select">
-                                    <select id="editQuantizationSelect" title="양자화 옵션 선택">
-                                        <option value="BF16 (기본, 최고품질)">BF16 (기본)</option>
-                                    </select>
-                                </div>
-                                <label class="cpu-offload-label" title="VRAM이 부족할 때 체크하세요.">
-                                    <input type="checkbox" id="editCpuOffloadCheck" checked>
-                                    <span>CPU 오프로딩</span>
-                                </label>
                             </div>
                             <div class="model-actions">
                                 <button class="btn btn-sm btn-primary" id="btnEditLoadModel" title="편집 모델 로드">
@@ -501,17 +471,14 @@
                 </div>
                 
                 <div class="settings-section">
-                    <h3>🤖 모델 설정</h3>
+                    <h3>🤖 모델 설정 (관리자 설정)</h3>
+                    <p class="setting-description">양자화/CPU 오프로딩 옵션은 관리자만 변경할 수 있으며, 선택값은 서버에 저장됩니다.</p>
                     <div class="setting-group">
                         <label>양자화</label>
                         <select id="quantizationSelect">
                             <option value="BF16 (기본, 최고품질)">BF16 (기본, 최고품질)</option>
                             <!-- 서버에서 동적으로 옵션을 로드합니다 -->
                         </select>
-                    </div>
-                    <div class="setting-group">
-                        <label>모델 경로 (선택)</label>
-                        <input type="text" id="modelPathInput" placeholder="비워두면 기본 경로">
                     </div>
                     <div class="setting-group">
                         <label>
@@ -530,8 +497,8 @@
                 </div>
                 
                 <div class="settings-section">
-                    <h3>🎨 LongCat-Image-Edit 모델 설정</h3>
-                    <p class="setting-description">이미지 편집용 LongCat-Image-Edit 모델 설정입니다.</p>
+                    <h3>🎨 LongCat-Image-Edit 모델 설정 (관리자 설정)</h3>
+                    <p class="setting-description">양자화/CPU 오프로딩 옵션은 관리자만 변경할 수 있으며, 선택값은 서버에 저장됩니다.</p>
                     <div class="setting-group">
                         <label>양자화</label>
                         <select id="editQuantizationSelectSettings">
@@ -627,11 +594,7 @@
                     <div class="setting-group">
                         <label>모델 (비워두면 기본값 사용)</label>
                         <div class="model-input-wrapper">
-                            <select id="llmModelSelect">
-                                <option value="">기본 모델</option>
-                                <option value="__custom__">✏️ 직접 입력...</option>
-                            </select>
-                            <input type="text" id="llmModelCustomInput" placeholder="모델명을 직접 입력 (예: gpt-4o)" style="display: none;">
+                            <input type="text" id="llmModelInput" placeholder="모델명을 직접 입력 (비우면 기본값)" title="모델명을 직접 입력 (비우면 기본값)">
                         </div>
                     </div>
                     <div class="setting-info" id="llmProviderInfo">

@@ -9,7 +9,6 @@ from datetime import datetime
 from config.defaults import (
     DATA_DIR,
     OUTPUTS_DIR,
-    MODELS_DIR,
     DEFAULT_GENERATION_SETTINGS,
     THEMES,
 )
@@ -90,7 +89,6 @@ class SettingsManager:
             "llm_model": "",  # 비어있으면 provider 기본값 사용
             
             # 경로 설정
-            "model_path": str(MODELS_DIR),
             "output_path": str(OUTPUTS_DIR),
             
             # 생성 설정
@@ -99,6 +97,9 @@ class SettingsManager:
             # 모델 설정
             "quantization": "BF16 (기본, 최고품질)",
             "cpu_offload": False,
+            # 편집 모델 설정 (LongCat-Image-Edit)
+            "edit_quantization": "BF16 (기본, 최고품질)",
+            "edit_cpu_offload": True,
             
             # UI 설정
             "theme": "다크 모드",
