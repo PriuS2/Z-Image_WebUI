@@ -48,13 +48,13 @@ from utils.settings import settings
 from utils.translator import translator
 from utils.prompt_enhancer import prompt_enhancer
 from utils.metadata import ImageMetadata, filename_generator
-from utils.history import get_history_manager_sync, HistoryManager
-from utils.favorites import get_favorites_manager_sync, FavoritesManager
+from utils.history import get_history_manager_sync, HistoryManager, clear_history_manager_cache
+from utils.favorites import get_favorites_manager_sync, FavoritesManager, clear_favorites_manager_cache
 from utils.session import session_manager, is_localhost, SessionManager, SessionInfo
 from utils.queue_manager import generation_queue, GenerationQueueManager
 from utils.auth import auth_manager, User
 from utils.longcat_edit import longcat_edit_manager
-from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager
+from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager, clear_edit_history_manager_cache
 from utils.edit_llm import edit_translator, edit_enhancer, edit_suggester
 from utils.gpu_monitor import gpu_monitor
 
@@ -1861,6 +1861,36 @@ async def admin_delete_user(request: Request, user_id: int):
     return {
         "success": True,
         "message": message
+    }
+
+
+@app.delete("/api/admin/users/{user_id}/data")
+async def admin_delete_user_data(request: Request, user_id: int):
+    """사용자 데이터 삭제 (계정 유지, 관리자 전용)
+
+    - 계정(DB)은 유지
+    - 히스토리/즐겨찾기/편집 히스토리/설정 등 세션 데이터 폴더 삭제
+    - 생성/편집 결과 이미지 등 outputs 폴더 삭제
+    """
+    require_admin(request)
+
+    data_id = f"user_{user_id}"
+
+    # 진행 중/대기 중 작업이 있으면 먼저 제거(파일 재생성/경합 방지)
+    await generation_queue.remove_session_items(data_id)
+
+    # 사용자 데이터 삭제(세션 폴더 + outputs 폴더)
+    await session_manager.delete_user_data(user_id)
+
+    # 캐시 제거: 삭제 직후 기존 캐시가 다시 파일을 저장하는 것을 방지
+    clear_history_manager_cache(data_id)
+    clear_favorites_manager_cache(data_id)
+    clear_edit_history_manager_cache(data_id)
+
+    return {
+        "success": True,
+        "message": "사용자 데이터가 삭제되었습니다. (계정은 유지됩니다.)",
+        "data_id": data_id,
     }
 
 

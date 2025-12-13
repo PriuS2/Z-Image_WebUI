@@ -263,6 +263,11 @@ def get_edit_history_manager_sync(session_id: str) -> EditHistoryManager:
     return _session_edit_history_managers[session_id]
 
 
+def clear_edit_history_manager_cache(session_id: str) -> None:
+    """세션별 편집 히스토리 매니저 캐시 제거 (데이터 삭제/초기화용)"""
+    _session_edit_history_managers.pop(session_id, None)
+
+
 # 전역 인스턴스 (마이그레이션용)
 edit_history_manager = EditHistoryManager()
 

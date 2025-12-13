@@ -231,5 +231,10 @@ def get_history_manager_sync(session_id: str) -> HistoryManager:
     return _session_history_managers[session_id]
 
 
+def clear_history_manager_cache(session_id: str) -> None:
+    """세션별 히스토리 매니저 캐시 제거 (데이터 삭제/초기화용)"""
+    _session_history_managers.pop(session_id, None)
+
+
 # 레거시 호환: 전역 인스턴스 (마이그레이션용)
 history_manager = HistoryManager()
