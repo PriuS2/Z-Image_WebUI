@@ -736,7 +736,6 @@ async function loadModel(fromChat = false) {
     
     // 양자화/CPU 오프로딩 설정은 설정 탭에서만 관리
     const quantization = document.getElementById('quantizationSelect')?.value || "BF16 (기본, 최고품질)";
-    const modelPath = document.getElementById('modelPathInput')?.value || '';
     
     const cpuOffload = document.getElementById('cpuOffloadCheck')?.checked || false;
     
@@ -749,7 +748,6 @@ async function loadModel(fromChat = false) {
         const targetDevice = isAdmin ? (adminGpuSettings.generation_gpu || 'auto') : 'auto';
         await apiCall('/model/load', 'POST', {
             quantization,
-            model_path: modelPath,
             cpu_offload: cpuOffload,
             target_device: targetDevice
         });

@@ -9,7 +9,6 @@ from datetime import datetime
 from config.defaults import (
     DATA_DIR,
     OUTPUTS_DIR,
-    MODELS_DIR,
     DEFAULT_GENERATION_SETTINGS,
     THEMES,
 )
@@ -90,7 +89,6 @@ class SettingsManager:
             "llm_model": "",  # 비어있으면 provider 기본값 사용
             
             # 경로 설정
-            "model_path": str(MODELS_DIR),
             "output_path": str(OUTPUTS_DIR),
             
             # 생성 설정

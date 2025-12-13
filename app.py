@@ -36,6 +36,7 @@ from config.defaults import (
     EDIT_QUANTIZATION_OPTIONS,
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
+    MODELS_DIR,
     SERVER_HOST,
     SERVER_PORT,
     SERVER_RELOAD,
@@ -197,7 +198,6 @@ class GenerateRequest(BaseModel):
 
 class ModelLoadRequest(BaseModel):
     quantization: str = "BF16 (기본, 최고품질)"
-    model_path: str = ""
     cpu_offload: bool = False
     target_device: str = "auto"  # 관리자 전용: "auto", "cuda:0", "cuda:1", "cpu", "mps"
 
@@ -981,7 +981,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
                     hf_hub_download,
                     repo_id=repo_id, 
                     filename=filename,
-                    cache_dir=model_request.model_path if model_request.model_path else None
+                    cache_dir=str(MODELS_DIR)
                 )
                 
                 # 3단계: GGUF Transformer 로드
@@ -1030,9 +1030,8 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
                 
                 load_kwargs = {
                     "torch_dtype": torch.bfloat16,
+                    "cache_dir": str(MODELS_DIR),
                 }
-                if model_request.model_path:
-                    load_kwargs["cache_dir"] = model_request.model_path
                 
                 await ws_manager.broadcast({
                     "type": "model_progress", 
