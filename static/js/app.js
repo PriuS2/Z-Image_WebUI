@@ -1121,25 +1121,39 @@ async function loadSessionList() {
             const idDisplay = user.data_id || '';
             const connected = !!user.connected;
             const connectedBadge = connected ? '🟢' : '⚪';
-            const canDeleteData = Number.isInteger(userId) && userId > 0;
-            const canDisconnect = !!idDisplay;
-            item.innerHTML = `
-                <span class="session-actions">
-                    <button class="btn btn-xs btn-secondary"
-                        ${canDisconnect ? `onclick="disconnectSession(${JSON.stringify(idDisplay)}, ${JSON.stringify(usernameDisplay)})"` : 'disabled'}
-                        title="${canDisconnect ? '현재 접속(WebSocket)/대기열 정리' : '세션 키를 알 수 없어 정리 불가'}">
-                        <i class="ri-logout-box-r-line"></i>
-                    </button>
-                </span>
-                <span class="session-user" title="${idDisplay}">${connectedBadge} ${usernameDisplay}</span>
-                <span class="session-activity">${formatDate(user.last_activity)}</span>
-                <span class="session-size">${user.data_size || ''}</span>
-                <button class="btn btn-xs btn-danger"
-                    ${canDeleteData ? `onclick="deleteUserData(${userId}, ${JSON.stringify(usernameDisplay)})"` : 'disabled'}
-                    title="${canDeleteData ? '해당 사용자 데이터 삭제(계정 유지)' : '사용자 ID를 알 수 없어 삭제 불가'}">
-                    <i class="ri-delete-bin-line"></i>
-                </button>
-            `;
+            const canDeleteData = Number.isFinite(userId) && userId > 0;
+
+            // 1) 사용자
+            const userSpan = document.createElement('span');
+            userSpan.className = 'session-user';
+            userSpan.title = idDisplay;
+            userSpan.textContent = `${connectedBadge} ${usernameDisplay}`;
+
+            // 2) 마지막 활동
+            const activitySpan = document.createElement('span');
+            activitySpan.className = 'session-activity';
+            activitySpan.textContent = formatDate(user.last_activity);
+
+            // 3) 데이터 크기
+            const sizeSpan = document.createElement('span');
+            sizeSpan.className = 'session-size';
+            sizeSpan.textContent = user.data_size || '';
+
+            // 4) 데이터 삭제 버튼
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'btn btn-xs btn-danger';
+            deleteBtn.title = canDeleteData ? '해당 사용자 데이터 삭제(계정 유지)' : '사용자 ID를 알 수 없어 삭제 불가';
+            deleteBtn.innerHTML = `<i class="ri-delete-bin-line"></i>`;
+            if (!canDeleteData) {
+                deleteBtn.disabled = true;
+            } else {
+                deleteBtn.addEventListener('click', () => deleteUserData(userId, usernameDisplay));
+            }
+
+            item.appendChild(userSpan);
+            item.appendChild(activitySpan);
+            item.appendChild(sizeSpan);
+            item.appendChild(deleteBtn);
             sessionList.appendChild(item);
         });
     } catch (error) {
@@ -1147,29 +1161,16 @@ async function loadSessionList() {
     }
 }
 
-async function disconnectSession(dataId, username) {
-    const name = username || dataId || '알 수 없음';
-    if (!dataId) return;
-
-    if (!confirm(`'${name}' 사용자의 현재 접속을 정리하시겠습니까?\n\n- WebSocket 연결 강제 종료\n- 대기열 요청 제거\n- (가능하면) 세션 매핑 정리`)) return;
-
-    try {
-        await apiCall(`/admin/sessions/${dataId}`, 'DELETE');
-        loadSessionList();
-        addMessage('system', `✅ '${name}' 사용자 접속이 정리되었습니다.`);
-    } catch (error) {
-        addMessage('system', `❌ 접속 정리 실패: ${error.message}`, 'error');
-    }
-}
-
 async function deleteUserData(userId, username) {
-    if (!Number.isInteger(userId) || userId <= 0) return;
+    // API에서 number로 내려오지만 안전하게 정규화
+    const uid = Number(userId);
+    if (!Number.isFinite(uid) || uid <= 0) return;
 
-    const name = username || `user_${userId}`;
+    const name = username || `user_${uid}`;
     if (!confirm(`'${name}' 사용자의 데이터를 삭제하시겠습니까?\n\n- 계정은 유지됩니다.\n- 히스토리/즐겨찾기/편집기록/설정 및 생성된 이미지 등이 삭제됩니다.`)) return;
 
     try {
-        await apiCall(`/admin/users/${userId}/data`, 'DELETE');
+        await apiCall(`/admin/users/${uid}/data`, 'DELETE');
         loadSessionList();
         addMessage('system', `✅ '${name}' 사용자 데이터가 삭제되었습니다. (계정 유지)`);
     } catch (error) {
