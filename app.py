@@ -210,8 +210,13 @@ class SettingsRequest(BaseModel):
     # LLM Provider 설정
     llm_provider: str = ""
     llm_api_key: str = ""
-    llm_base_url: str = ""
-    llm_model: str = ""
+    # NOTE:
+    # - /api/settings 는 다양한 설정(자동 언로드 등) 저장에도 재사용된다.
+    # - 아래 값들을 기본값 ""로 두면, 요청 바디에 해당 필드가 없어도 Pydantic이 ""를 채워넣어
+    #   저장 시 기존 값이 ""로 덮여서 "설정이 풀리는" 문제가 발생한다.
+    # - 따라서 Optional로 두고, 실제로 값이 전달된 경우에만(= None이 아닐 때만) 저장한다.
+    llm_base_url: Optional[str] = None
+    llm_model: Optional[str] = None
     # 시스템 프롬프트 (번역/향상)
     translate_system_prompt: Optional[str] = None
     enhance_system_prompt: Optional[str] = None
