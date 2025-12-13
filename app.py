@@ -2270,15 +2270,35 @@ async def edit_image(
     auto_translate_bool = auto_translate.lower() in ("true", "1", "yes")
     
     try:
+        # 이번 편집 요청의 고유 ID (입력/참조 이미지 파일명 등에 사용)
+        run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        
+        # 세션별 출력 디렉토리 (입력/참조/결과 모두 여기 저장)
+        outputs_dir = session.get_outputs_dir()
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        
         # 이미지 로드
         image_data = await image.read()
         pil_image = Image.open(BytesIO(image_data)).convert("RGB")
         
+        # 업로드된 원본 이미지를 출력 폴더에 저장 (편집기록에서 원본 확인용)
+        original_filename = f"edit_input_{run_id}.png"
+        original_output_path = outputs_dir / original_filename
+        pil_image.save(original_output_path, format="PNG")
+        original_image_url = f"/outputs/{session.data_id}/{original_filename}"
+        
         # 참조 이미지 로드 (있으면)
         ref_image = None
+        reference_image_url = None
         if reference_image:
             ref_data = await reference_image.read()
             ref_image = Image.open(BytesIO(ref_data)).convert("RGB")
+            
+            # 참조 이미지도 저장 (추후 편집기록 확장/디버깅용)
+            reference_filename = f"edit_reference_{run_id}.png"
+            reference_output_path = outputs_dir / reference_filename
+            ref_image.save(reference_output_path, format="PNG")
+            reference_image_url = f"/outputs/{session.data_id}/{reference_filename}"
         
         # 프롬프트 번역
         final_prompt = prompt
@@ -2339,10 +2359,6 @@ async def edit_image(
         if not success:
             raise HTTPException(500, message)
         
-        # 세션별 출력 디렉토리
-        outputs_dir = session.get_outputs_dir()
-        outputs_dir.mkdir(parents=True, exist_ok=True)
-        
         # 결과 저장 및 반환
         images_response = []
         result_paths = []
@@ -2390,6 +2406,8 @@ async def edit_image(
                 "guidance_scale": guidance_scale,
                 "seed": results[0]["seed"] if results else -1,
             },
+            original_image_path=original_image_url,
+            reference_image_path=reference_image_url,
             result_image_paths=[img["path"] for img in images_response]
         )
         

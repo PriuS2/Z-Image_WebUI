@@ -4174,7 +4174,7 @@ async function loadEditHistory() {
             if (resultPath) {
                 historyImageList.push({
                     path: resultPath,
-                    metadata: { prompt: `편집 결과\n편집 프롬프트: ${entry.prompt}`, seed: entry.seed }
+                    metadata: { prompt: `편집 결과\n편집 프롬프트: ${entry.prompt}`, seed: entry.settings?.seed }
                 });
             }
             
