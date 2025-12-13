@@ -1194,23 +1194,6 @@ body {
     font-size: 14px;
 }
 
-.setting-readonly {
-    width: 100%;
-    max-width: 400px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 10px 14px;
-    color: var(--text-primary);
-    font-size: 14px;
-    line-height: 1.35;
-}
-
-.setting-readonly code {
-    color: var(--text-primary);
-    word-break: break-all;
-}
-
 .setting-group input[type="checkbox"] {
     margin-right: 8px;
 }
