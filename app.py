@@ -847,7 +847,9 @@ async def home(request: Request):
         "user": {
             "id": session.user_id,
             "username": session.username,
-        }
+        },
+        # 정적 파일 캐시로 인해 UI 변경이 반영되지 않는 문제 방지
+        "cache_bust": int(time.time()),
     })
     set_session_cookie(response, session)
     

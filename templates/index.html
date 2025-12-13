@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Z-Image WebUI</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ cache_bust }}">
     <link href="https://cdn.jsdelivr.net/npm/remixicon@4.0.0/fonts/remixicon.css" rel="stylesheet">
     <!-- JSZip for batch download -->
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -894,6 +894,6 @@
         </div>
     </div>
     
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v={{ cache_bust }}"></script>
 </body>
 </html>
