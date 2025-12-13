@@ -1122,9 +1122,16 @@ async function loadSessionList() {
             const connected = !!user.connected;
             const connectedBadge = connected ? '🟢' : '⚪';
             const canDeleteData = Number.isInteger(userId) && userId > 0;
+            const canDisconnect = !!idDisplay;
             item.innerHTML = `
-                <span class="session-id" title="${idDisplay}">${idDisplay}</span>
-                <span class="session-user">${connectedBadge} ${usernameDisplay}</span>
+                <span class="session-actions">
+                    <button class="btn btn-xs btn-secondary"
+                        ${canDisconnect ? `onclick="disconnectSession(${JSON.stringify(idDisplay)}, ${JSON.stringify(usernameDisplay)})"` : 'disabled'}
+                        title="${canDisconnect ? '현재 접속(WebSocket)/대기열 정리' : '세션 키를 알 수 없어 정리 불가'}">
+                        <i class="ri-logout-box-r-line"></i>
+                    </button>
+                </span>
+                <span class="session-user" title="${idDisplay}">${connectedBadge} ${usernameDisplay}</span>
                 <span class="session-activity">${formatDate(user.last_activity)}</span>
                 <span class="session-size">${user.data_size || ''}</span>
                 <button class="btn btn-xs btn-danger"
@@ -1137,6 +1144,21 @@ async function loadSessionList() {
         });
     } catch (error) {
         console.error('세션 목록 로드 실패:', error);
+    }
+}
+
+async function disconnectSession(dataId, username) {
+    const name = username || dataId || '알 수 없음';
+    if (!dataId) return;
+
+    if (!confirm(`'${name}' 사용자의 현재 접속을 정리하시겠습니까?\n\n- WebSocket 연결 강제 종료\n- 대기열 요청 제거\n- (가능하면) 세션 매핑 정리`)) return;
+
+    try {
+        await apiCall(`/admin/sessions/${dataId}`, 'DELETE');
+        loadSessionList();
+        addMessage('system', `✅ '${name}' 사용자 접속이 정리되었습니다.`);
+    } catch (error) {
+        addMessage('system', `❌ 접속 정리 실패: ${error.message}`, 'error');
     }
 }
 
