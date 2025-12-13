@@ -492,8 +492,10 @@
                         </select>
                     </div>
                     <div class="setting-group">
-                        <label>모델 경로 (선택)</label>
-                        <input type="text" id="modelPathInput" placeholder="비워두면 기본 경로">
+                        <label>모델 경로</label>
+                        <div class="setting-readonly">
+                            <code id="genModelPathDisplay">-</code>
+                        </div>
                     </div>
                     <div class="setting-group">
                         <label>
@@ -520,6 +522,12 @@
                             <option value="BF16 (기본, 최고품질)">BF16 (기본, 최고품질)</option>
                             <!-- 서버에서 동적으로 옵션을 로드합니다 -->
                         </select>
+                    </div>
+                    <div class="setting-group">
+                        <label>모델 경로</label>
+                        <div class="setting-readonly">
+                            <code id="editModelPathDisplay">-</code>
+                        </div>
                     </div>
                     <div class="setting-group">
                         <label>

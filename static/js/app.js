@@ -736,7 +736,6 @@ async function loadModel(fromChat = false) {
     
     // 양자화/CPU 오프로딩 설정은 설정 탭에서만 관리
     const quantization = document.getElementById('quantizationSelect')?.value || "BF16 (기본, 최고품질)";
-    const modelPath = document.getElementById('modelPathInput')?.value || '';
     
     const cpuOffload = document.getElementById('cpuOffloadCheck')?.checked || false;
     
@@ -749,7 +748,6 @@ async function loadModel(fromChat = false) {
         const targetDevice = isAdmin ? (adminGpuSettings.generation_gpu || 'auto') : 'auto';
         await apiCall('/model/load', 'POST', {
             quantization,
-            model_path: modelPath,
             cpu_offload: cpuOffload,
             target_device: targetDevice
         });
@@ -1345,6 +1343,8 @@ async function loadQuantizationOptions() {
     try {
         const result = await apiCall('/settings');
         const settingsSelect = document.getElementById('quantizationSelect');
+        const genModelPathDisplay = document.getElementById('genModelPathDisplay');
+        const editModelPathDisplay = document.getElementById('editModelPathDisplay');
         
         if (result.quantization_options) {
             if (settingsSelect) {
@@ -1360,6 +1360,18 @@ async function loadQuantizationOptions() {
             console.log('양자화 옵션 로드 완료:', result.quantization_options.length + '개');
             
             updateModelDownloadStatus();
+        }
+
+        // 모델 경로 표기 (서버 설정값)
+        if (result.model_path) {
+            if (genModelPathDisplay) {
+                genModelPathDisplay.textContent = result.model_path;
+                genModelPathDisplay.title = result.model_path;
+            }
+            if (editModelPathDisplay) {
+                editModelPathDisplay.textContent = result.model_path;
+                editModelPathDisplay.title = result.model_path;
+            }
         }
 
         // 서버에 저장된 모델 설정값 반영
@@ -3040,9 +3052,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // 초기 데이터 로드
     updateModelStatus();
     loadTemplates();
-    loadQuantizationOptions();
-    // 설정 탭에서도 편집 모델 양자화 옵션을 로드하여 저장값을 즉시 반영
-    loadEditQuantizationOptions();
+    // /settings(저장값) -> /edit/status(옵션 목록) 순서로 로드해야
+    // 편집 양자화 저장값(pendingEditQuantizationValue)이 BF16로 덮이지 않습니다.
+    loadQuantizationOptions().then(() => {
+        // 설정 탭에서도 편집 모델 양자화 옵션을 로드하여 저장값을 즉시 반영
+        loadEditQuantizationOptions();
+    });
     loadLlmProviders();
     loadAutoUnloadSettings();
     

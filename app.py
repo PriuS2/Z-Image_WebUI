@@ -1591,6 +1591,8 @@ async def get_settings(request: Request):
         # 기타 설정
         "output_path": str(settings.get("output_path", OUTPUTS_DIR)),
         "filename_pattern": settings.get("filename_pattern", "{date}_{time}_{seed}"),
+        # 모델 경로 (표기용 - UI에서는 변경 불가)
+        "model_path": str(settings.get("model_path", MODELS_DIR)),
         # 모델 설정 (관리자만 변경 가능 - 모든 사용자에게는 현재 값만 제공)
         "quantization": settings.get("quantization", "BF16 (기본, 최고품질)"),
         "cpu_offload": settings.get("cpu_offload", False),
