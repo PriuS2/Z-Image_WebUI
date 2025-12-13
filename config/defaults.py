@@ -85,6 +85,13 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 
+# ===== GPU 설정 (관리자 전용) =====
+# 사용 가능한 값: "auto", "cuda:0", "cuda:1", ..., "cpu", "mps"
+DEFAULT_GPU_SETTINGS = {
+    "generation_gpu": os.getenv("GENERATION_GPU", "auto"),  # 이미지 생성 모델 GPU
+    "edit_gpu": os.getenv("EDIT_GPU", "auto"),              # 이미지 편집 모델 GPU
+}
+
 # 모델 옵션 (BF16 전용 및 GGUF 양자화 옵션)
 QUANTIZATION_OPTIONS = {
     # 기본 BF16 (양자화 없음, 최고 품질)
@@ -155,10 +162,25 @@ DEFAULT_GENERATION_SETTINGS = {
 }
 
 # LongCat-Image-Edit 모델 옵션
+# 양자화 옵션: bf16 (기본), int8 (bitsandbytes 8bit), int4 (bitsandbytes 4bit)
 EDIT_QUANTIZATION_OPTIONS = {
     "BF16 (기본, 최고품질)": {
         "type": "bf16",
         "repo": LONGCAT_EDIT_MODEL,
+        "quantization": None,
+        "estimated_vram": "~20-24GB",
+    },
+    "INT8 (절반 용량, 고품질)": {
+        "type": "int8",
+        "repo": LONGCAT_EDIT_MODEL,
+        "quantization": "int8",
+        "estimated_vram": "~12-14GB",
+    },
+    "INT4 (1/4 용량, 균형)": {
+        "type": "int4",
+        "repo": LONGCAT_EDIT_MODEL,
+        "quantization": "int4",
+        "estimated_vram": "~8-10GB",
     },
 }
 

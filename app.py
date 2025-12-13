@@ -39,6 +39,7 @@ from config.defaults import (
     SERVER_PORT,
     SERVER_RELOAD,
     LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT,
+    DEFAULT_GPU_SETTINGS,
 )
 from config.templates import PROMPT_TEMPLATES
 from utils.settings import settings
@@ -54,6 +55,7 @@ from utils.auth import auth_manager, User
 from utils.longcat_edit import longcat_edit_manager
 from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager
 from utils.edit_llm import edit_translator, edit_enhancer, edit_suggester
+from utils.gpu_monitor import gpu_monitor
 
 
 # ============= 전역 변수 =============
@@ -106,15 +108,16 @@ async def auto_unload_checker():
             print(f"⏰ 자동 언로드: {timeout_minutes}분 동안 활동이 없어 모델을 언로드합니다.")
             
             try:
+                # GPU 모니터에서 모델 등록 해제
+                gpu_monitor.unregister_model("Z-Image-Turbo")
+                
                 # 모델 언로드
                 del pipe
                 pipe = None
                 current_model = None
                 
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                
+                # GPU 캐시 정리
+                gpu_monitor.clear_cache()
                 gc.collect()
                 
                 # 클라이언트에게 알림
@@ -195,6 +198,7 @@ class ModelLoadRequest(BaseModel):
     quantization: str = "BF16 (기본, 최고품질)"
     model_path: str = ""
     cpu_offload: bool = False
+    target_device: str = "auto"  # 관리자 전용: "auto", "cuda:0", "cuda:1", "cpu", "mps"
 
 
 class SettingsRequest(BaseModel):
@@ -241,6 +245,7 @@ class EditModelLoadRequest(BaseModel):
     quantization: str = "BF16 (기본, 최고품질)"
     model_path: str = ""
     cpu_offload: bool = True  # 기본 활성화 (VRAM 절약)
+    target_device: str = "auto"  # 관리자 전용: "auto", "cuda:0", "cuda:1", "cpu", "mps"
 
 
 class EditGenerateRequest(BaseModel):
@@ -293,13 +298,17 @@ class ResetPasswordRequest(BaseModel):
 
 
 # ============= 유틸리티 함수 =============
-def get_device():
-    """사용 가능한 디바이스 반환"""
-    if torch.cuda.is_available():
-        return "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+def get_device(target_device: str = "auto") -> str:
+    """
+    사용할 디바이스 반환
+    
+    Args:
+        target_device: 목표 디바이스 ("auto", "cuda:0", "cuda:1", "cpu", "mps")
+    
+    Returns:
+        실제 사용할 디바이스
+    """
+    return gpu_monitor.resolve_device(target_device, prefer_empty=True)
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -311,11 +320,7 @@ def image_to_base64(image: Image.Image) -> str:
 
 def get_vram_info() -> str:
     """VRAM 사용량 정보"""
-    if torch.cuda.is_available():
-        vram_used = torch.cuda.memory_allocated() / 1024**3
-        vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        return f"{vram_used:.1f}GB / {vram_total:.1f}GB"
-    return "N/A"
+    return gpu_monitor.get_vram_summary()
 
 
 async def get_session_from_request(request: Request) -> SessionInfo:
@@ -699,8 +704,10 @@ async def get_status(request: Request):
     
     session = await get_session_from_request(request)
     queue_status = generation_queue.get_queue_status()
+    client_host = request.client.host if request.client else None
+    is_admin = is_localhost(client_host)
     
-    return {
+    status = {
         "model_loaded": pipe is not None,
         "current_model": current_model,
         "device": device or get_device(),
@@ -710,8 +717,19 @@ async def get_status(request: Request):
         "queue_length": queue_status["queue_length"],
         "connected_users": ws_manager.get_session_count(),
         "session_id": session.session_id,
-        "is_admin": is_localhost(request.client.host if request.client else None),
+        "is_admin": is_admin,
     }
+    
+    # 관리자인 경우 GPU 정보 추가
+    if is_admin:
+        status["gpu_info"] = {
+            "gpu_count": gpu_monitor.gpu_count,
+            "cuda_available": gpu_monitor.cuda_available,
+            "available_devices": gpu_monitor.get_available_devices(),
+            "gpus": gpu_monitor.get_all_gpu_info(),
+        }
+    
+    return status
 
 
 @app.post("/api/model/load")
@@ -724,7 +742,14 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
         raise HTTPException(409, "다른 사용자가 모델을 로드/언로드 중입니다. 잠시 후 다시 시도해주세요.")
     
     async with model_lock:
-        device = get_device()
+        # GPU 선택 (관리자만 특정 GPU 지정 가능)
+        target_device = model_request.target_device
+        client_host = request.client.host if request.client else None
+        if not is_localhost(client_host) and target_device != "auto":
+            # 관리자가 아닌 경우 auto로 강제
+            target_device = "auto"
+        
+        device = get_device(target_device)
         quant_info = QUANTIZATION_OPTIONS.get(model_request.quantization)
         
         if not quant_info:
@@ -860,6 +885,9 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             
             current_model = model_request.quantization
             
+            # GPU 모니터에 모델 등록
+            gpu_monitor.register_model("Z-Image-Turbo", device)
+            
             # 6단계: 완료
             await ws_manager.broadcast({
                 "type": "model_progress", 
@@ -872,7 +900,8 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
             await ws_manager.broadcast({
                 "type": "model_status_change",
                 "model_loaded": True,
-                "current_model": current_model
+                "current_model": current_model,
+                "device": device
             })
             
             await ws_manager.broadcast({
@@ -880,7 +909,7 @@ async def load_model(request: Request, model_request: ModelLoadRequest):
                 "content": f"✅ 모델 로드 완료! ({dtype}, {device})"
             })
             
-            return {"success": True, "message": f"모델 로드 완료: {repo_id} ({dtype})"}
+            return {"success": True, "message": f"모델 로드 완료: {repo_id} ({dtype})", "device": device}
             
         except Exception as e:
             await ws_manager.broadcast({
@@ -915,6 +944,9 @@ async def unload_model(request: Request):
                 "detail": ""
             })
             
+            # GPU 모니터에서 모델 등록 해제
+            gpu_monitor.unregister_model("Z-Image-Turbo")
+            
             del pipe
             pipe = None
             current_model = None
@@ -926,10 +958,8 @@ async def unload_model(request: Request):
                 "detail": ""
             })
             
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-            
+            # GPU 캐시 정리
+            gpu_monitor.clear_cache()
             gc.collect()
             
             await ws_manager.broadcast({
@@ -1632,6 +1662,84 @@ async def delete_session(session_id: str, request: Request):
     return {"success": success}
 
 
+# ============= GPU 관리 API (관리자 전용) =============
+class GPUSettingsRequest(BaseModel):
+    generation_gpu: Optional[str] = None  # "auto", "cuda:0", "cuda:1", "cpu"
+    edit_gpu: Optional[str] = None        # "auto", "cuda:0", "cuda:1", "cpu"
+
+
+@app.get("/api/admin/gpu-status")
+async def get_gpu_status(request: Request):
+    """GPU 상태 조회 (관리자 전용)"""
+    require_admin(request)
+    
+    gpu_info = gpu_monitor.get_system_info()
+    
+    # 현재 모델 상태 추가
+    gpu_info["models"] = {
+        "generation": {
+            "loaded": pipe is not None,
+            "name": current_model,
+            "device": device,
+        },
+        "edit": {
+            "loaded": longcat_edit_manager.is_loaded,
+            "name": longcat_edit_manager.current_model,
+            "device": longcat_edit_manager.device,
+            "quantization": longcat_edit_manager.current_quantization,
+            "cpu_offload": longcat_edit_manager.cpu_offload_enabled,
+        }
+    }
+    
+    # 현재 GPU 설정 추가
+    gpu_info["current_settings"] = {
+        "generation_gpu": settings.get("generation_gpu", DEFAULT_GPU_SETTINGS["generation_gpu"]),
+        "edit_gpu": settings.get("edit_gpu", DEFAULT_GPU_SETTINGS["edit_gpu"]),
+    }
+    
+    return gpu_info
+
+
+@app.post("/api/admin/gpu-settings")
+async def update_gpu_settings(request: Request, gpu_settings: GPUSettingsRequest):
+    """GPU 설정 업데이트 (관리자 전용)"""
+    require_admin(request)
+    
+    # 유효한 디바이스인지 확인
+    available_devices = gpu_monitor.get_available_devices()
+    
+    if gpu_settings.generation_gpu is not None:
+        if gpu_settings.generation_gpu not in available_devices:
+            raise HTTPException(400, f"유효하지 않은 디바이스: {gpu_settings.generation_gpu}")
+        settings.set("generation_gpu", gpu_settings.generation_gpu)
+    
+    if gpu_settings.edit_gpu is not None:
+        if gpu_settings.edit_gpu not in available_devices:
+            raise HTTPException(400, f"유효하지 않은 디바이스: {gpu_settings.edit_gpu}")
+        settings.set("edit_gpu", gpu_settings.edit_gpu)
+    
+    return {
+        "success": True,
+        "message": "GPU 설정이 업데이트되었습니다.",
+        "settings": {
+            "generation_gpu": settings.get("generation_gpu", DEFAULT_GPU_SETTINGS["generation_gpu"]),
+            "edit_gpu": settings.get("edit_gpu", DEFAULT_GPU_SETTINGS["edit_gpu"]),
+        }
+    }
+
+
+@app.get("/api/admin/available-devices")
+async def get_available_devices(request: Request):
+    """사용 가능한 디바이스 목록 (관리자 전용)"""
+    require_admin(request)
+    
+    return {
+        "devices": gpu_monitor.get_available_devices(),
+        "gpu_count": gpu_monitor.gpu_count,
+        "cuda_available": gpu_monitor.cuda_available,
+    }
+
+
 # ============= WebSocket =============
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str] = Cookie(default=None)):
@@ -1713,15 +1821,34 @@ async def get_edit_status(request: Request):
     update_edit_activity()
     
     session = await get_session_from_request(request)
+    client_host = request.client.host if request.client else None
+    is_admin = is_localhost(client_host)
     
-    return {
+    status = {
         "model_loaded": longcat_edit_manager.is_loaded,
         "current_model": longcat_edit_manager.current_model,
+        "current_quantization": longcat_edit_manager.current_quantization,
+        "cpu_offload_enabled": longcat_edit_manager.cpu_offload_enabled,
         "device": longcat_edit_manager.device or longcat_edit_manager.get_device(),
         "vram": get_vram_info(),
         "session_id": session.session_id,
+        "is_admin": is_admin,
         "quantization_options": list(EDIT_QUANTIZATION_OPTIONS.keys()),
+        # 양자화 옵션 상세 정보 (예상 VRAM 포함)
+        "quantization_details": {
+            name: {
+                "type": info.get("type"),
+                "estimated_vram": info.get("estimated_vram", "N/A"),
+            }
+            for name, info in EDIT_QUANTIZATION_OPTIONS.items()
+        },
     }
+    
+    # 관리자인 경우 추가 정보
+    if is_admin:
+        status["available_devices"] = gpu_monitor.get_available_devices()
+    
+    return status
 
 
 @app.post("/api/edit/model/load")
@@ -1731,6 +1858,13 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
     
     if edit_model_lock.locked():
         raise HTTPException(409, "다른 사용자가 모델을 로드/언로드 중입니다.")
+    
+    # GPU 선택 (관리자만 특정 GPU 지정 가능)
+    target_device = model_request.target_device
+    client_host = request.client.host if request.client else None
+    if not is_localhost(client_host) and target_device != "auto":
+        # 관리자가 아닌 경우 auto로 강제
+        target_device = "auto"
     
     async with edit_model_lock:
         async def progress_callback(percent, label, detail):
@@ -1755,6 +1889,7 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 quantization=model_request.quantization,
                 cpu_offload=model_request.cpu_offload,
                 model_path=model_request.model_path if model_request.model_path else None,
+                target_device=target_device,
                 progress_callback=progress_callback
             )
             
@@ -1762,13 +1897,14 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 await ws_manager.broadcast({
                     "type": "edit_model_status_change",
                     "model_loaded": True,
-                    "current_model": longcat_edit_manager.current_model
+                    "current_model": longcat_edit_manager.current_model,
+                    "device": longcat_edit_manager.device
                 })
                 await ws_manager.broadcast({
                     "type": "edit_system",
-                    "content": f"✅ 편집 모델 로드 완료!"
+                    "content": f"✅ 편집 모델 로드 완료! ({longcat_edit_manager.device})"
                 })
-                return {"success": True, "message": message}
+                return {"success": True, "message": message, "device": longcat_edit_manager.device}
             else:
                 await ws_manager.broadcast({
                     "type": "edit_model_progress",
