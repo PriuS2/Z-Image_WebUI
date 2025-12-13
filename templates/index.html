@@ -459,6 +459,46 @@
                         </button>
                     </div>
                 </div>
+
+                <!-- GPU 설정/모니터링 (관리자 전용) -->
+                <div class="settings-section" id="gpuManagementSection" style="display: none;">
+                    <h3>🖥️ GPU 설정/모니터링 (관리자 전용)</h3>
+                    <p class="setting-description">
+                        대화탭(이미지 생성)과 편집탭 모델을 서로 다른 GPU로 로드할 수 있습니다. (localhost 관리자만)
+                    </p>
+
+                    <div class="setting-group">
+                        <label>생성 모델 GPU</label>
+                        <select id="generationGpuSelect">
+                            <option value="auto">auto</option>
+                            <option value="cpu">cpu</option>
+                        </select>
+                        <small class="setting-hint">auto: 가장 여유로운 GPU 자동 선택</small>
+                    </div>
+
+                    <div class="setting-group">
+                        <label>편집 모델 GPU</label>
+                        <select id="editGpuSelect">
+                            <option value="auto">auto</option>
+                            <option value="cpu">cpu</option>
+                        </select>
+                        <small class="setting-hint">편집 모델은 VRAM을 많이 사용하므로 별도 GPU 권장</small>
+                    </div>
+
+                    <div class="setting-actions">
+                        <button class="btn btn-secondary" id="btnRefreshGpuStatus" title="GPU 상태 새로고침">
+                            <i class="ri-refresh-line"></i> GPU 상태 새로고침
+                        </button>
+                        <button class="btn btn-primary" id="btnSaveGpuSettings" title="GPU 설정 저장">
+                            <i class="ri-save-line"></i> GPU 설정 저장
+                        </button>
+                    </div>
+
+                    <div class="gpu-status-box">
+                        <div class="gpu-status-summary" id="gpuStatusSummary"></div>
+                        <div class="gpu-status-list" id="gpuStatusList"></div>
+                    </div>
+                </div>
                 
                 <div class="settings-section">
                     <h3>🤖 모델 설정</h3>
