@@ -11,8 +11,10 @@ from config.defaults import (
     LONGCAT_EDIT_MODEL,
     EDIT_QUANTIZATION_OPTIONS,
     DEFAULT_EDIT_SETTINGS,
+    DEFAULT_GPU_SETTINGS,
 )
 from utils.llm_client import llm_client
+from utils.gpu_monitor import gpu_monitor
 
 
 # 참조 이미지 분석용 프롬프트 템플릿 (편집 프롬프트 기반으로 필요한 요소만 추출)
@@ -46,8 +48,11 @@ class LongCatEditManager:
         self.pipe = None
         self.transformer = None
         self.text_processor = None
+        self.text_encoder = None  # 양자화된 text_encoder 별도 관리
         self.current_model: Optional[str] = None
+        self.current_quantization: Optional[str] = None  # 현재 양자화 타입
         self.device: Optional[str] = None
+        self.cpu_offload_enabled: bool = False  # CPU 오프로딩 활성화 여부
         self._lock = asyncio.Lock()
         self._original_progress_bar = None  # 원본 progress_bar 메서드 저장
     
@@ -56,28 +61,94 @@ class LongCatEditManager:
         """모델 로드 여부"""
         return self.pipe is not None
     
-    def get_device(self) -> str:
-        """사용 가능한 디바이스 반환"""
-        if torch.cuda.is_available():
-            return "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+    def get_device(self, target_device: str = "auto") -> str:
+        """
+        사용할 디바이스 반환
+        
+        Args:
+            target_device: 목표 디바이스 ("auto", "cuda:0", "cuda:1", "cpu", "mps")
+        
+        Returns:
+            실제 사용할 디바이스
+        """
+        return gpu_monitor.resolve_device(target_device, prefer_empty=True)
+    
+    def _check_bitsandbytes_available(self) -> Tuple[bool, str]:
+        """bitsandbytes 라이브러리 사용 가능 여부 확인"""
+        # bnb 8bit/4bit는 CUDA 환경이 사실상 필수
+        if not torch.cuda.is_available():
+            return False, "INT8/INT4 양자화는 CUDA GPU가 필요합니다. (torch.cuda.is_available() == False)"
+        try:
+            import bitsandbytes as bnb
+            return True, ""
+        except ImportError:
+            return False, "bitsandbytes 라이브러리가 설치되지 않았습니다. 'pip install bitsandbytes'를 실행하세요."
+
+    def _get_cuda_index_from_device(self, device: str) -> int:
+        """'cuda', 'cuda:0' 형태에서 index 추출 (기본 0)"""
+        if not device or not device.startswith("cuda"):
+            return 0
+        if ":" not in device:
+            return 0
+        try:
+            return int(device.split(":", 1)[1])
+        except Exception:
+            return 0
+
+    def _get_preferred_dtype(self, device: Optional[str]) -> torch.dtype:
+        """
+        GPU/플랫폼에 맞는 dtype 선택
+        - Ampere(8.x)+: bf16 우선
+        - 그 외 CUDA: fp16
+        - CPU: fp32
+        """
+        if device and device.startswith("cuda") and torch.cuda.is_available():
+            idx = self._get_cuda_index_from_device(device)
+            try:
+                major, _minor = torch.cuda.get_device_capability(idx)
+            except Exception:
+                major = 0
+            return torch.bfloat16 if major >= 8 else torch.float16
+        return torch.float32
+    
+    def _get_quantization_config(self, quantization_type: str):
+        """양자화 설정 반환"""
+        if quantization_type == "int8":
+            from transformers import BitsAndBytesConfig
+            return BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_enable_fp32_cpu_offload=True,
+            )
+        elif quantization_type == "int4":
+            from transformers import BitsAndBytesConfig
+            # bf16 미지원 GPU(예: 일부 구형/저가형)에서는 fp16로 강제
+            compute_dtype = self._get_preferred_dtype(self.device)
+            if compute_dtype == torch.float32:
+                compute_dtype = torch.float16
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=compute_dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+        return None
     
     async def load_model(
         self,
         quantization: str = "BF16 (기본, 최고품질)",
         cpu_offload: bool = True,
         model_path: Optional[str] = None,
+        target_device: str = "auto",
         progress_callback: Optional[Callable[[int, str, str], Any]] = None
     ) -> Tuple[bool, str]:
         """
         LongCat-Image-Edit 모델 로드
         
         Args:
-            quantization: 양자화 옵션
+            quantization: 양자화 옵션 (BF16, INT8, INT4)
             cpu_offload: CPU 오프로딩 사용 여부 (VRAM 절약)
             model_path: 커스텀 모델 경로
+            target_device: 목표 디바이스 ("auto", "cuda:0", "cuda:1", "cpu", "mps")
             progress_callback: 진행상황 콜백 (percent, label, detail)
         
         Returns:
@@ -88,13 +159,21 @@ class LongCatEditManager:
                 return False, "모델이 이미 로드되어 있습니다. 먼저 언로드하세요."
             
             try:
-                self.device = self.get_device()
+                self.device = self.get_device(target_device)
+                preferred_dtype = self._get_preferred_dtype(self.device)
                 quant_info = EDIT_QUANTIZATION_OPTIONS.get(quantization)
                 
                 if not quant_info:
                     return False, f"지원하지 않는 양자화: {quantization}"
                 
                 repo_id = quant_info["repo"]
+                quantization_type = quant_info.get("quantization")  # None, "int8", "int4"
+                
+                # 양자화 사용 시 bitsandbytes 확인
+                if quantization_type in ("int8", "int4"):
+                    bnb_available, bnb_error = self._check_bitsandbytes_available()
+                    if not bnb_available:
+                        return False, bnb_error
                 
                 # 진행 상황 콜백
                 def report_progress(percent: int, label: str, detail: str = ""):
@@ -107,65 +186,135 @@ class LongCatEditManager:
                                 asyncio.to_thread(progress_callback, percent, label, detail)
                             )
                 
-                report_progress(5, "🔧 LongCat-Image-Edit 모델 초기화 중...", f"디바이스: {self.device}")
+                quant_label = quantization_type.upper() if quantization_type else "BF16"
+                report_progress(5, f"🔧 LongCat-Image-Edit 모델 초기화 중...", f"디바이스: {self.device}, 양자화: {quant_label}")
                 
                 # LongCat-Image 패키지에서 임포트
-                from transformers import AutoProcessor
+                from transformers import AutoProcessor, AutoModel
                 from longcat_image.models import LongCatImageTransformer2DModel
                 from longcat_image.pipelines import LongCatImageEditPipeline
                 
                 checkpoint_dir = model_path if model_path else repo_id
                 
-                # BF16 모델 로드
                 report_progress(10, "📥 모델 다운로드 확인 중...", f"저장소: {checkpoint_dir}")
                 
                 # Text Processor 로드
-                report_progress(20, "🔄 Text Processor 로딩 중...", "")
+                report_progress(15, "🔄 Text Processor 로딩 중...", "")
                 self.text_processor = await asyncio.to_thread(
                     AutoProcessor.from_pretrained,
                     checkpoint_dir,
                     subfolder="tokenizer"
                 )
                 
+                # Text Encoder 로드 (양자화 적용)
+                if quantization_type in ("int8", "int4"):
+                    report_progress(25, f"🔄 Text Encoder 로딩 중 ({quant_label} 양자화)...", "VRAM 절약 모드")
+                    
+                    quant_config = self._get_quantization_config(quantization_type)
+                    
+                    # 양자화된 text_encoder 로드
+                    def load_quantized_encoder():
+                        # 특정 클래스(Qwen2VL...)를 하드코딩하면 qwen2_5_vl 체크포인트에서 타입 불일치로 실패할 수 있음.
+                        # AutoModel을 사용해 체크포인트의 model_type에 맞는 클래스를 자동 선택한다.
+                        from transformers import AutoModel
+                        # device_map="auto"는 멀티 GPU에서 모델이 분산되어 로드될 수 있고,
+                        # 파이프라인의 입력 텐서(device)가 다른 GPU로 가면 "same device" 에러가 발생한다.
+                        # 따라서 편집 모델은 선택된 단일 GPU(self.device)에 고정 로드한다.
+                        target = self.device if (self.device and self.device.startswith("cuda")) else "cuda:0"
+                        if target == "cuda":
+                            target = "cuda:0"
+
+                        return AutoModel.from_pretrained(
+                            checkpoint_dir,
+                            subfolder="text_encoder",
+                            quantization_config=quant_config,
+                            torch_dtype=preferred_dtype if preferred_dtype != torch.float32 else torch.float16,
+                            device_map={"": target},
+                            low_cpu_mem_usage=True,
+                            trust_remote_code=True,
+                        )
+                    
+                    self.text_encoder = await asyncio.to_thread(load_quantized_encoder)
+                else:
+                    self.text_encoder = None
+                
                 # Transformer 로드
-                report_progress(40, "🔄 Transformer 로딩 중...", "대용량 모델 로드 중 (시간이 걸릴 수 있습니다)")
+                report_progress(45, "🔄 Transformer 로딩 중...", "대용량 모델 로드 중 (시간이 걸릴 수 있습니다)")
                 self.transformer = await asyncio.to_thread(
                     LongCatImageTransformer2DModel.from_pretrained,
                     checkpoint_dir,
                     subfolder="transformer",
-                    torch_dtype=torch.bfloat16,
+                    torch_dtype=preferred_dtype,
                     use_safetensors=True
                 )
                 
                 # 파이프라인 구성
                 report_progress(70, "🔗 파이프라인 구성 중...", "")
+                
+                pipeline_kwargs = {
+                    "transformer": self.transformer,
+                    "text_processor": self.text_processor,
+                    "torch_dtype": preferred_dtype,
+                }
+                
+                # 양자화된 text_encoder가 있으면 사용
+                if self.text_encoder is not None:
+                    pipeline_kwargs["text_encoder"] = self.text_encoder
+                
                 self.pipe = await asyncio.to_thread(
                     LongCatImageEditPipeline.from_pretrained,
                     checkpoint_dir,
-                    transformer=self.transformer,
-                    text_processor=self.text_processor,
-                    torch_dtype=torch.bfloat16
+                    **pipeline_kwargs
                 )
+                
+                # VAE 메모리 최적화 활성화
+                report_progress(80, "🔧 메모리 최적화 설정 중...", "VAE slicing/tiling 활성화")
+                await asyncio.to_thread(self.pipe.enable_vae_slicing)
+                await asyncio.to_thread(self.pipe.enable_vae_tiling)
                 
                 # 디바이스 설정
                 report_progress(85, f"🚀 {self.device.upper()}로 모델 전송 중...", "")
                 
                 if cpu_offload:
+                    # 주의: bnb(INT8/INT4)로 로드된 text_encoder는 CPU로 옮기면 문제가 날 수 있음.
+                    # pipeline의 offload 순서에서 text_encoder를 제외해, transformer/vae 위주로만 오프로딩한다.
+                    if self.text_encoder is not None and hasattr(self.pipe, "model_cpu_offload_seq"):
+                        self.pipe.model_cpu_offload_seq = "image_encoder->transformer->vae"
                     await asyncio.to_thread(self.pipe.enable_model_cpu_offload)
                     report_progress(95, "⚙️ CPU 오프로딩 설정됨", "VRAM 부족 시 RAM 사용")
+                    self.cpu_offload_enabled = True
                 else:
-                    await asyncio.to_thread(self.pipe.to, self.device, torch.bfloat16)
+                    # 양자화된 모델은 이미 device_map으로 배치됨
+                    if self.text_encoder is None:
+                        await asyncio.to_thread(self.pipe.to, self.device, preferred_dtype)
+                    else:
+                        # text_encoder는 device_map으로 이미 배치되어 있을 수 있으므로,
+                        # 나머지 모듈만 GPU로 이동
+                        if hasattr(self.pipe, "transformer") and self.pipe.transformer is not None:
+                            await asyncio.to_thread(self.pipe.transformer.to, self.device, preferred_dtype)
+                        if hasattr(self.pipe, "vae") and self.pipe.vae is not None:
+                            await asyncio.to_thread(self.pipe.vae.to, self.device, preferred_dtype)
+                        if hasattr(self.pipe, "image_encoder") and self.pipe.image_encoder is not None:
+                            await asyncio.to_thread(self.pipe.image_encoder.to, self.device, preferred_dtype)
+                    self.cpu_offload_enabled = False
                 
                 self.current_model = quantization
+                self.current_quantization = quantization_type
+                
+                # GPU 모니터에 모델 등록
+                gpu_monitor.register_model("LongCat-Image-Edit", self.device)
                 
                 # 원본 progress_bar 메서드 저장 (후킹 복원용)
                 self._original_progress_bar = self.pipe.progress_bar.__func__
                 
                 report_progress(100, "✅ LongCat-Image-Edit 모델 로드 완료!", self._get_vram_info())
                 
-                return True, f"모델 로드 완료: {checkpoint_dir}"
+                return True, f"모델 로드 완료: {checkpoint_dir} ({quant_label})"
                 
             except ImportError as e:
+                error_msg = str(e)
+                if "bitsandbytes" in error_msg:
+                    return False, "bitsandbytes 라이브러리가 설치되지 않았습니다. 'pip install bitsandbytes'를 실행하세요."
                 return False, f"LongCat-Image 패키지가 설치되지 않았습니다. 'pip install -e ./LongCat-Image'를 실행하세요. 오류: {e}"
             except Exception as e:
                 # 실패 시 정리
@@ -186,6 +335,9 @@ class LongCatEditManager:
     
     def _cleanup(self):
         """모델 메모리 정리"""
+        # GPU 모니터에서 모델 등록 해제
+        gpu_monitor.unregister_model("LongCat-Image-Edit")
+        
         if self.pipe is not None:
             del self.pipe
             self.pipe = None
@@ -198,22 +350,22 @@ class LongCatEditManager:
             del self.text_processor
             self.text_processor = None
         
+        if self.text_encoder is not None:
+            del self.text_encoder
+            self.text_encoder = None
+        
         self.current_model = None
+        self.current_quantization = None
+        self.cpu_offload_enabled = False
         self._original_progress_bar = None  # 원본 progress_bar 참조도 정리
         
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-        
+        # GPU 캐시 정리
+        gpu_monitor.clear_cache(self.device)
         gc.collect()
     
     def _get_vram_info(self) -> str:
         """VRAM 사용량 정보"""
-        if torch.cuda.is_available():
-            vram_used = torch.cuda.memory_allocated() / 1024**3
-            vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            return f"VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB"
-        return "N/A"
+        return gpu_monitor.get_vram_summary()
     
     def _hook_progress_bar(self, step_callback):
         """파이프라인의 progress_bar를 후킹하여 스텝별 콜백 호출"""

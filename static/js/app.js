@@ -11,6 +11,13 @@ let lastHistoryId = null;
 let isAdmin = false;  // 관리자 여부
 let sessionId = null;  // 현재 세션 ID
 
+// ============= 관리자 GPU 설정/모니터링 =============
+let adminGpuSettings = {
+    generation_gpu: 'auto',
+    edit_gpu: 'auto'
+};
+let adminAvailableDevices = ['auto', 'cpu'];
+
 // ============= DOM 요소 =============
 const chatMessages = document.getElementById('chatMessages');
 const promptInput = document.getElementById('promptInput');
@@ -721,11 +728,13 @@ async function loadModel(fromChat = false) {
         const offloadMsg = cpuOffload ? ' (CPU 오프로딩 사용)' : '';
         addMessage('system', `🔄 모델 로딩을 시작합니다...${offloadMsg}`);
         showProgress('모델 로딩 준비 중...', 5);
-        
+
+        const targetDevice = isAdmin ? (adminGpuSettings.generation_gpu || 'auto') : 'auto';
         await apiCall('/model/load', 'POST', {
             quantization,
             model_path: modelPath,
-            cpu_offload: cpuOffload
+            cpu_offload: cpuOffload,
+            target_device: targetDevice
         });
         
         updateModelStatus();
@@ -863,6 +872,7 @@ function updateAdminUI() {
     const systemPromptsSection = document.getElementById('systemPromptsSection');
     const autoUnloadSection = document.getElementById('autoUnloadSection');
     const editAutoUnloadSection = document.getElementById('editAutoUnloadSection');
+    const gpuManagementSection = document.getElementById('gpuManagementSection');
     
     // 시스템 프롬프트는 개인화되므로 항상 활성화
     if (systemPromptsSection) {
@@ -897,6 +907,10 @@ function updateAdminUI() {
             sessionManagementSection.style.display = 'block';
             loadSessionList();
         }
+
+        if (gpuManagementSection) {
+            gpuManagementSection.style.display = 'block';
+        }
     } else {
         // 일반 사용자: LLM 설정 및 자동 언로드 설정 읽기 전용
         if (adminNotice) adminNotice.style.display = 'block';
@@ -927,6 +941,126 @@ function updateAdminUI() {
         if (sessionManagementSection) {
             sessionManagementSection.style.display = 'none';
         }
+
+        if (gpuManagementSection) {
+            gpuManagementSection.style.display = 'none';
+        }
+    }
+}
+
+// ============= GPU 관리 (관리자 전용) =============
+function setSelectOptions(selectEl, options, selectedValue) {
+    if (!selectEl) return;
+    selectEl.innerHTML = '';
+    options.forEach(optVal => {
+        const opt = document.createElement('option');
+        opt.value = optVal;
+        opt.textContent = optVal;
+        selectEl.appendChild(opt);
+    });
+    if (selectedValue && options.includes(selectedValue)) {
+        selectEl.value = selectedValue;
+    }
+}
+
+function renderGpuStatus(data) {
+    const summaryEl = document.getElementById('gpuStatusSummary');
+    const listEl = document.getElementById('gpuStatusList');
+    if (!summaryEl || !listEl) return;
+
+    const gpus = data?.gpus || [];
+    const models = data?.models || {};
+    const currentSettings = data?.current_settings || {};
+
+    const genDevice = models?.generation?.device || 'N/A';
+    const editDevice = models?.edit?.device || 'N/A';
+    const editQuant = models?.edit?.quantization ? String(models.edit.quantization).toUpperCase() : 'BF16';
+
+    summaryEl.textContent =
+        `생성 모델: ${models?.generation?.loaded ? '로드됨' : '미로드'} (${genDevice}) / ` +
+        `편집 모델: ${models?.edit?.loaded ? '로드됨' : '미로드'} (${editDevice}, ${editQuant}) / ` +
+        `설정: 생성=${currentSettings.generation_gpu || 'auto'}, 편집=${currentSettings.edit_gpu || 'auto'}`;
+
+    listEl.innerHTML = '';
+    if (!gpus.length) {
+        const empty = document.createElement('div');
+        empty.className = 'gpu-status-item';
+        empty.innerHTML = `<div class="gpu-status-item-title"><span>GPU 정보 없음</span><span></span></div>
+<div class="gpu-status-item-sub">CUDA 사용 불가이거나 GPU가 감지되지 않았습니다.</div>`;
+        listEl.appendChild(empty);
+        return;
+    }
+
+    gpus.forEach(gpu => {
+        const mem = gpu.memory || {};
+        const util = gpu.utilization || {};
+        const loadedModels = gpu.loaded_models || [];
+        const item = document.createElement('div');
+        item.className = 'gpu-status-item';
+        item.innerHTML = `
+            <div class="gpu-status-item-title">
+                <span>GPU ${gpu.id}: ${gpu.name || ''}</span>
+                <span>${(mem.used_gb ?? mem.allocated_gb ?? 0).toFixed(2)}GB / ${(mem.total_gb ?? 0).toFixed(2)}GB</span>
+            </div>
+            <div class="gpu-status-item-sub">
+                사용(used): ${(mem.used_gb ?? 0).toFixed(2)}GB / 예약(reserved): ${(mem.reserved_gb ?? 0).toFixed(2)}GB / 사용률: ${(mem.usage_percent ?? 0).toFixed(1)}%<br/>
+                사용률(GPU): ${util.gpu_percent ?? 'N/A'}% / 사용률(VRAM): ${util.memory_percent ?? 'N/A'}% (${util.source || 'unknown'})<br/>
+                로드된 모델: ${loadedModels.length ? loadedModels.join(', ') : '없음'}
+            </div>
+        `;
+        listEl.appendChild(item);
+    });
+}
+
+async function loadAdminGpuPanel() {
+    if (!isAdmin) return;
+    try {
+        const data = await apiCall('/admin/gpu-status');
+
+        // 서버가 내려주는 디바이스 목록 사용
+        adminAvailableDevices = data?.available_devices || adminAvailableDevices;
+        if (!Array.isArray(adminAvailableDevices) || adminAvailableDevices.length === 0) {
+            const dev = await apiCall('/admin/available-devices');
+            adminAvailableDevices = dev?.devices || ['auto', 'cpu'];
+        }
+
+        // 현재 설정 반영
+        if (data?.current_settings) {
+            adminGpuSettings.generation_gpu = data.current_settings.generation_gpu || adminGpuSettings.generation_gpu;
+            adminGpuSettings.edit_gpu = data.current_settings.edit_gpu || adminGpuSettings.edit_gpu;
+        }
+
+        const genSelect = document.getElementById('generationGpuSelect');
+        const editSelect = document.getElementById('editGpuSelect');
+        setSelectOptions(genSelect, adminAvailableDevices, adminGpuSettings.generation_gpu);
+        setSelectOptions(editSelect, adminAvailableDevices, adminGpuSettings.edit_gpu);
+
+        renderGpuStatus(data);
+    } catch (error) {
+        console.error('GPU 상태 로드 실패:', error);
+        const summaryEl = document.getElementById('gpuStatusSummary');
+        if (summaryEl) summaryEl.textContent = `GPU 상태 로드 실패: ${error.message}`;
+    }
+}
+
+async function saveAdminGpuSettings() {
+    if (!isAdmin) {
+        addMessage('system', '❌ GPU 설정은 관리자만 변경할 수 있습니다.', 'error');
+        return;
+    }
+    const genSelect = document.getElementById('generationGpuSelect');
+    const editSelect = document.getElementById('editGpuSelect');
+    const generation_gpu = genSelect?.value || 'auto';
+    const edit_gpu = editSelect?.value || 'auto';
+
+    try {
+        const result = await apiCall('/admin/gpu-settings', 'POST', { generation_gpu, edit_gpu });
+        adminGpuSettings.generation_gpu = result?.settings?.generation_gpu || generation_gpu;
+        adminGpuSettings.edit_gpu = result?.settings?.edit_gpu || edit_gpu;
+        addMessage('system', `✅ GPU 설정 저장됨 (생성=${adminGpuSettings.generation_gpu}, 편집=${adminGpuSettings.edit_gpu})`);
+        await loadAdminGpuPanel();
+    } catch (error) {
+        addMessage('system', `❌ GPU 설정 저장 실패: ${error.message}`, 'error');
     }
 }
 
@@ -2336,7 +2470,10 @@ function switchTab(tabId) {
     if (tabId === 'gallery') loadGallery();
     if (tabId === 'history') loadHistory();
     if (tabId === 'favorites') loadFavorites();
-    if (tabId === 'settings' && isAdmin) loadSessionList();
+    if (tabId === 'settings' && isAdmin) {
+        loadSessionList();
+        loadAdminGpuPanel();
+    }
     if (tabId === 'edit-history') loadEditHistory();
     if (tabId === 'edit') loadEditQuantizationOptions();
 }
@@ -2982,6 +3119,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnSaveEditAutoUnload) {
         btnSaveEditAutoUnload.addEventListener('click', saveEditAutoUnloadSettings);
     }
+
+    // GPU 관리 (관리자 전용)
+    const btnRefreshGpuStatus = document.getElementById('btnRefreshGpuStatus');
+    if (btnRefreshGpuStatus) {
+        btnRefreshGpuStatus.addEventListener('click', loadAdminGpuPanel);
+    }
+    const btnSaveGpuSettings = document.getElementById('btnSaveGpuSettings');
+    if (btnSaveGpuSettings) {
+        btnSaveGpuSettings.addEventListener('click', saveAdminGpuSettings);
+    }
     
     // 설정 탭 편집 모델 로드/언로드
     const btnLoadEditModelSettings = document.getElementById('btnLoadEditModelSettings');
@@ -3415,10 +3562,12 @@ async function loadEditModel() {
         setEditModelLoadingState(true);
         addEditMessage('system', '🔄 편집 모델 로딩을 시작합니다...');
         showEditProgress('모델 로딩 준비 중...', 5);
-        
+
+        const targetDevice = isAdmin ? (adminGpuSettings.edit_gpu || 'auto') : 'auto';
         await apiCall('/edit/model/load', 'POST', {
             quantization,
-            cpu_offload: cpuOffload
+            cpu_offload: cpuOffload,
+            target_device: targetDevice
         });
         
         updateEditModelStatus();

@@ -1717,6 +1717,50 @@ body {
     line-height: 1.5;
 }
 
+/* ===== GPU 관리 (관리자 전용) ===== */
+.gpu-status-box {
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+}
+
+.gpu-status-summary {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    line-height: 1.4;
+}
+
+.gpu-status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.gpu-status-item {
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+}
+
+.gpu-status-item-title {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.gpu-status-item-sub {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
 /* ============= 제작자 정보 섹션 ============= */
 .about-section {
     background: linear-gradient(135deg, var(--bg-secondary) 0%, rgba(99, 102, 241, 0.05) 100%);
