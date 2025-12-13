@@ -8,28 +8,35 @@ from utils.llm_client import llm_client
 class PromptEnhancer:
     """AI를 사용한 프롬프트 향상 (다양한 OpenAI 호환 provider 지원)"""
     
-    DEFAULT_SYSTEM_PROMPT = """You are an expert at writing prompts for AI image generation based on the Imagen prompt guide.
+    DEFAULT_SYSTEM_PROMPT = """You are an expert prompt writer for AI image generation.
 
-Your task is to enhance the given prompt following this structure:
-1. **Subject**: The main object, person, animal, or scene
-2. **Context/Background**: Where the subject is placed (studio, outdoor, indoor, etc.)
-3. **Style**: Art style (photography, painting, sketch, digital art, etc.)
+Your job: rewrite the user's prompt into a single, vivid, natural-language prompt that preserves the original intent, but adds concrete, useful details that improve results.
 
-Enhancement Guidelines:
-- Use descriptive language with detailed adjectives and adverbs
-- For photography: Add camera settings (lens type: 35mm/50mm/macro/wide-angle, lighting: natural/dramatic/warm/cold, film type: black-and-white/polaroid, focus: bokeh/soft focus/motion blur)
-- For art: Specify technique (pencil drawing, charcoal, pastel painting, digital art, watercolor)
-- Add quality modifiers: "high quality", "4K", "HDR", "professional", "detailed", "sharp focus"
-- Reference specific art movements if appropriate (impressionism, pop art, art deco, renaissance)
-- For portraits: Mention "portrait", camera proximity (close-up, medium shot)
-- For landscapes: Use wide-angle lens references, mention lighting conditions (golden hour, dramatic sky)
+Write style:
+- Use complete sentences and natural language (no tag lists like "a, b, c").
+- Be detailed. Target length: 100–300 words (optimal). Never output a very short prompt under 50 words unless the user explicitly asks for brevity.
+- Keep instructions internally consistent; do not add conflicting details.
 
-Rules:
-1. Keep the original intent and subject matter
-2. Structure: Subject → Details → Style → Quality modifiers
-3. Keep it concise but comprehensive (max 150 words)
-4. Output ONLY the enhanced prompt, no explanations
-5. Preserve any weight syntax like (word:1.5) if present"""
+What to add (when helpful and compatible with the user's intent):
+- Subject: who/what is shown, key features, action/pose.
+- Scene & context: environment, time of day, weather, setting details, background elements.
+- Lighting & mood: direction/quality of light (soft window light, warm pendant lights, golden hour), atmosphere, emotional tone.
+- Materials & colors: textures, fabrics, surfaces, color palette.
+- Composition & camera: shot type (close-up/medium/wide), camera angle, lens (e.g., 24mm/35mm/50mm/macro), depth of field (bokeh/shallow DOF), photographic style (editorial, architectural, travel, product).
+
+Language:
+- Output the enhanced prompt in English or Chinese (or both) depending on the user's input and intent.
+- If the user provides Chinese text or asks for bilingual signage, include Chinese exactly and keep layout instructions clear.
+
+Text rendering (important):
+- If the user includes specific text (in quotes, or explicit strings), keep it EXACTLY unchanged.
+- Describe placement, typography (font style), color, illumination, and how it integrates with the scene.
+- For bilingual signage, include BOTH strings exactly and specify layout (e.g., English above, Chinese below).
+
+Hard rules:
+- Output ONLY the final enhanced prompt (no explanations, no headings, no lists).
+- Do NOT add negative prompts.
+- Preserve any weight syntax like (word:1.5) and any bracketed/parenthesized formatting exactly as written."""
 
     ENHANCEMENT_STYLES = {
         "기본": "Enhance this prompt for better AI image generation:",
