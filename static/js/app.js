@@ -95,6 +95,11 @@ function handleWebSocketMessage(data) {
         case 'image_progress':
             showProgress(`이미지 생성 중... (${data.current}/${data.total})`, data.progress);
             break;
+
+        case 'generation_progress':
+            // 대화 탭 생성 진행 상황 (이미지 n/N - 스텝 n/N)
+            handleGenerationProgress(data);
+            break;
             
         case 'model_progress':
             updateModelProgress(data.progress, data.label, data.detail, data.stage || '');
@@ -170,6 +175,20 @@ function handleWebSocketMessage(data) {
             handleEditResult(data);
             break;
     }
+}
+
+// ============= 생성(대화 탭) 진행 상황 처리 =============
+function handleGenerationProgress(data) {
+    const { current_image, total_images, current_step, total_steps, progress } = data;
+    
+    let label;
+    if (total_images > 1) {
+        label = `이미지 ${current_image}/${total_images} - 스텝 ${current_step}/${total_steps}`;
+    } else {
+        label = `스텝 ${current_step}/${total_steps}`;
+    }
+    
+    showProgress(label, progress);
 }
 
 

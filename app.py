@@ -8,6 +8,7 @@ import base64
 import random
 import gc
 import time
+import inspect
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -527,9 +528,78 @@ async def execute_generation(request_data: dict) -> dict:
         await asyncio.sleep(0.05)
         
         generator = torch.Generator(device).manual_seed(current_seed)
+        loop = asyncio.get_running_loop()
+        last_sent_step = {"value": -1}  # 클로저에서 mutable로 사용
+
+        def _send_generation_progress_from_thread(current_step: int, total_steps: int):
+            """diffusers 콜백(별도 스레드)에서 WebSocket 진행상황 전송"""
+            # 너무 잦은 중복 전송 방지
+            if current_step == last_sent_step["value"]:
+                return
+            last_sent_step["value"] = current_step
+
+            # 전체 진행률 계산 (이미지 + 스텝 기준)
+            image_progress = (i) / num_images
+            step_progress = (current_step / max(total_steps, 1)) / num_images
+            overall_progress = int((image_progress + step_progress) * 100)
+
+            payload = {
+                "type": "generation_progress",
+                "current_image": i + 1,
+                "total_images": num_images,
+                "current_step": current_step,
+                "total_steps": total_steps,
+                "progress": overall_progress,
+            }
+
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    ws_manager.send_to_session(session_id, payload),
+                    loop
+                )
+                # 예외가 발생해도 작업을 깨지 않도록 흡수
+                fut.add_done_callback(lambda f: f.exception())
+            except Exception:
+                pass
         
         # 동기 pipe 호출을 스레드에서 실행
         def run_pipe():
+            call_sig = inspect.signature(pipe.__call__)
+
+            # diffusers 최신: callback_on_step_end 지원
+            if "callback_on_step_end" in call_sig.parameters:
+                def callback_on_step_end(_pipeline, step_index, _timestep, callback_kwargs):
+                    # step_index는 0-based인 경우가 대부분
+                    _send_generation_progress_from_thread(step_index + 1, steps)
+                    return callback_kwargs
+
+                return pipe(
+                    prompt=final_prompt,
+                    height=height,
+                    width=width,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator,
+                    callback_on_step_end=callback_on_step_end,
+                ).images[0]
+
+            # diffusers 구버전: callback/callback_steps 지원
+            if "callback" in call_sig.parameters:
+                def callback(step_index, _timestep, _latents):
+                    _send_generation_progress_from_thread(step_index + 1, steps)
+
+                return pipe(
+                    prompt=final_prompt,
+                    height=height,
+                    width=width,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator,
+                    callback=callback,
+                    callback_steps=1,
+                ).images[0]
+
+            # 콜백 미지원(예외 케이스): 기존 동작
             return pipe(
                 prompt=final_prompt,
                 height=height,
