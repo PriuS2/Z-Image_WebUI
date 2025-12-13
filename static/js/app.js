@@ -2075,6 +2075,7 @@ async function deleteFavorite(id) {
 
 // ============= 설정 =============
 let llmProviders = {};
+let currentLlmProviderId = 'openai';
 let defaultTranslatePrompt = '';
 let defaultEnhancePrompt = '';
 // 편집 시스템 프롬프트 기본값
@@ -2089,22 +2090,19 @@ async function loadLlmProviders() {
         
         const currentProvider = result.llm_provider || 'openai';
         const currentModel = result.llm_model || '';
+        currentLlmProviderId = currentProvider;
         
         const providerSelect = document.getElementById('llmProviderSelect');
-        const chatProviderSelect = document.getElementById('chatLlmProviderSelect');
-        
-        [providerSelect, chatProviderSelect].forEach(select => {
-            if (select) {
-                select.innerHTML = '';
-                for (const [pid, pinfo] of Object.entries(llmProviders)) {
-                    const opt = document.createElement('option');
-                    opt.value = pid;
-                    opt.textContent = pinfo.name;
-                    select.appendChild(opt);
-                }
-                select.value = currentProvider;
+        if (providerSelect) {
+            providerSelect.innerHTML = '';
+            for (const [pid, pinfo] of Object.entries(llmProviders)) {
+                const opt = document.createElement('option');
+                opt.value = pid;
+                opt.textContent = pinfo.name;
+                providerSelect.appendChild(opt);
             }
-        });
+            providerSelect.value = currentProvider;
+        }
         
         updateLlmModelList(currentProvider, currentModel);
         updateChatLlmModelList(currentProvider, currentModel);
@@ -2236,14 +2234,13 @@ function updateChatLlmModelList(providerId, currentModel = '') {
 async function saveChatLlmSettings() {
     if (!isAdmin) return;  // 관리자만 저장 가능
     
-    const provider = document.getElementById('chatLlmProviderSelect')?.value;
     const model = document.getElementById('chatLlmModelSelect')?.value;
     
-    if (!provider) return;
+    const provider = document.getElementById('llmProviderSelect')?.value || currentLlmProviderId || 'openai';
+    currentLlmProviderId = provider;
     
     try {
         await apiCall('/settings', 'POST', {
-            llm_provider: provider,
             llm_model: model
         });
         
@@ -2315,10 +2312,9 @@ async function saveLlmSettings() {
             llm_model: model
         });
         
-        const chatProviderSelect = document.getElementById('chatLlmProviderSelect');
         const chatModelSelect = document.getElementById('chatLlmModelSelect');
-        if (chatProviderSelect) chatProviderSelect.value = provider;
         if (chatModelSelect) updateChatLlmModelList(provider, model);
+        currentLlmProviderId = provider;
         
         addMessage('system', `✅ LLM 설정 저장됨 (${llmProviders[provider]?.name || provider}${model ? ' / ' + model : ''})`);
     } catch (error) {
@@ -3108,7 +3104,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const llmProviderSelect = document.getElementById('llmProviderSelect');
     if (llmProviderSelect) {
         llmProviderSelect.addEventListener('change', (e) => {
+            currentLlmProviderId = e.target.value;
             updateLlmModelList(e.target.value);
+            updateChatLlmModelList(e.target.value);
             updateLlmBaseUrlVisibility(e.target.value);
         });
     }
@@ -3125,15 +3123,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 llmModelCustomInput.style.display = 'none';
                 llmModelCustomInput.value = '';
             }
-        });
-    }
-    
-    // LLM 설정 - 대화탭 (빠른 선택)
-    const chatLlmProviderSelect = document.getElementById('chatLlmProviderSelect');
-    if (chatLlmProviderSelect) {
-        chatLlmProviderSelect.addEventListener('change', (e) => {
-            updateChatLlmModelList(e.target.value);
-            if (isAdmin) saveChatLlmSettings();
         });
     }
     
