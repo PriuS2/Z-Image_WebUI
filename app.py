@@ -50,7 +50,6 @@ from utils.prompt_enhancer import prompt_enhancer
 from utils.metadata import ImageMetadata, filename_generator
 from utils.history import get_history_manager_sync, HistoryManager
 from utils.favorites import get_favorites_manager_sync, FavoritesManager
-from utils.upscaler import upscaler, REALESRGAN_AVAILABLE
 from utils.session import session_manager, is_localhost, SessionManager, SessionInfo
 from utils.queue_manager import generation_queue, GenerationQueueManager
 from utils.auth import auth_manager, User
@@ -891,7 +890,6 @@ async def get_status(request: Request):
         "device": device or get_device(),
         "vram": get_vram_info(),
         "is_generating": queue_status["is_processing"],
-        "upscaler_available": REALESRGAN_AVAILABLE,
         "queue_length": queue_status["queue_length"],
         "connected_users": ws_manager.get_session_count(),
         # 프론트 호환 필드: 로그인 시 계정 키(user_{id}), 비로그인 시 None

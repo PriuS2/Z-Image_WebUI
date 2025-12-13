@@ -221,12 +221,6 @@ FILENAME_PATTERNS = {
     "image_{counter}_{seed}": "image_번호_시드",
 }
 
-# 업스케일 옵션
-UPSCALE_OPTIONS = {
-    "2x": 2,
-    "4x": 4,
-}
-
 # UI 테마
 THEMES = {
     "다크 모드": "dark",
