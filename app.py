@@ -1866,30 +1866,76 @@ async def admin_delete_user(request: Request, user_id: int):
 
 @app.get("/api/admin/sessions")
 async def get_all_sessions(request: Request):
-    """접속 사용자(계정) 목록 (관리자 전용)"""
+    """사용자(계정) 세션/접속 현황 목록 (관리자 전용)
+
+    기존에는 WebSocket '연결된' 계정만 반환했지만,
+    UI(세션 관리)에서 등록된 계정 전체가 보이길 기대하는 경우가 많아
+    등록된 사용자 목록 + 연결 여부를 함께 내려준다.
+    """
     require_admin(request)
 
-    users = []
-    # WebSocket 연결 키는 현재 계정(data_id)로 통일되어 있음
-    for data_id in sorted(ws_manager.get_connected_keys()):
-        user_id = _parse_user_id_from_data_id(data_id)
-        user = auth_manager.get_user_by_id(user_id) if user_id is not None else None
-        username = user.username if user else None
+    connected_keys = set(ws_manager.get_connected_keys())
 
-        # last_activity는 (있다면) 해당 유저의 활성 세션에서 가져옴
-        session = session_manager.get_session_by_user(user_id) if user_id is not None else None
-        last_activity = session.last_activity if session else None
+    rows: List[Dict[str, Any]] = []
 
-        users.append({
-            "data_id": data_id,           # user_{id}
+    # 1) 등록된 사용자 전체를 포함
+    all_users = auth_manager.get_all_users()
+    for u in all_users:
+        user_id = u.get("id")
+        if user_id is None:
+            continue
+
+        data_id = f"user_{user_id}"
+        connected = data_id in connected_keys
+
+        # last_activity: 세션 매니저의 활동 시간(있으면) → 없으면 last_login(있으면)
+        session = session_manager.get_session_by_user(user_id)
+        last_activity_ts: Optional[float] = None
+        last_activity_iso: Optional[str] = None
+        if session:
+            last_activity_ts = session.last_activity
+            last_activity_iso = datetime.fromtimestamp(session.last_activity).isoformat()
+        else:
+            # auth_manager.get_all_users()는 last_login을 ISO 문자열로 내려줌 (또는 None)
+            last_login = u.get("last_login")
+            if last_login:
+                last_activity_iso = last_login
+
+        rows.append({
+            "data_id": data_id,
             "user_id": user_id,
-            "username": username,
-            "last_activity": last_activity,
+            "username": u.get("username"),
+            "last_activity": last_activity_iso,
             "data_size": _get_data_size_by_data_id(data_id),
-            "connected": True,
+            "connected": connected,
+            "_sort_ts": last_activity_ts,  # 정렬용(응답에는 제거)
         })
 
-    return {"users": users}
+    # 2) 예외적으로 연결은 있는데 DB에 없는 키가 있으면 추가로 노출(디버깅/운영 편의)
+    known_data_ids = {r["data_id"] for r in rows if r.get("data_id")}
+    for data_id in sorted(connected_keys):
+        if data_id in known_data_ids:
+            continue
+        user_id = _parse_user_id_from_data_id(data_id)
+        session = session_manager.get_session_by_user(user_id) if user_id is not None else None
+        last_activity_iso = datetime.fromtimestamp(session.last_activity).isoformat() if session else None
+
+        rows.append({
+            "data_id": data_id,
+            "user_id": user_id,
+            "username": None,
+            "last_activity": last_activity_iso,
+            "data_size": _get_data_size_by_data_id(data_id),
+            "connected": True,
+            "_sort_ts": session.last_activity if session else None,
+        })
+
+    # 정렬: 연결된 계정 우선, 최근 활동 우선
+    rows.sort(key=lambda r: (bool(r.get("connected")), r.get("_sort_ts") or 0), reverse=True)
+    for r in rows:
+        r.pop("_sort_ts", None)
+
+    return {"users": rows}
 
 
 @app.delete("/api/admin/sessions/{session_id}")

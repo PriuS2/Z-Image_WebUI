@@ -1118,9 +1118,11 @@ async function loadSessionList() {
             item.className = 'session-list-item';
             const usernameDisplay = user.username || (user.user_id ? `user_${user.user_id}` : '알 수 없음');
             const idDisplay = user.data_id || '';
+            const connected = !!user.connected;
+            const connectedBadge = connected ? '🟢' : '⚪';
             item.innerHTML = `
                 <span class="session-id" title="${idDisplay}">${idDisplay}</span>
-                <span class="session-user">${usernameDisplay}</span>
+                <span class="session-user">${connectedBadge} ${usernameDisplay}</span>
                 <span class="session-activity">${formatDate(user.last_activity)}</span>
                 <span class="session-size">${user.data_size || ''}</span>
                 <button class="btn btn-xs btn-danger" onclick="deleteSession('${idDisplay}')">
