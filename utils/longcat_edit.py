@@ -217,12 +217,19 @@ class LongCatEditManager:
                         # 특정 클래스(Qwen2VL...)를 하드코딩하면 qwen2_5_vl 체크포인트에서 타입 불일치로 실패할 수 있음.
                         # AutoModel을 사용해 체크포인트의 model_type에 맞는 클래스를 자동 선택한다.
                         from transformers import AutoModel
+                        # device_map="auto"는 멀티 GPU에서 모델이 분산되어 로드될 수 있고,
+                        # 파이프라인의 입력 텐서(device)가 다른 GPU로 가면 "same device" 에러가 발생한다.
+                        # 따라서 편집 모델은 선택된 단일 GPU(self.device)에 고정 로드한다.
+                        target = self.device if (self.device and self.device.startswith("cuda")) else "cuda:0"
+                        if target == "cuda":
+                            target = "cuda:0"
+
                         return AutoModel.from_pretrained(
                             checkpoint_dir,
                             subfolder="text_encoder",
                             quantization_config=quant_config,
                             torch_dtype=preferred_dtype if preferred_dtype != torch.float32 else torch.float16,
-                            device_map="auto",  # bnb 4bit/8bit는 device_map이 필요 (CPU 로드 방지)
+                            device_map={"": target},
                             low_cpu_mem_usage=True,
                             trust_remote_code=True,
                         )
