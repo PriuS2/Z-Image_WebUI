@@ -94,7 +94,7 @@ function handleWebSocketMessage(data) {
             break;
             
         case 'image_progress':
-            showProgress(`이미지 생성 중... (${data.current}/${data.total})`, data.progress);
+            showProgress(`이미지 ${data.current}/${data.total} - 준비 중`, data.progress);
             break;
 
         case 'generation_progress':
@@ -397,7 +397,7 @@ function updateProgressFromMessage(message) {
             const current = parseInt(match[1]);
             const total = parseInt(match[2]);
             const percent = (current / total) * 100;
-            showProgress(`이미지 생성 중... (${current}/${total})`, percent);
+            showProgress(`이미지 ${current}/${total} - 준비 중`, percent);
         }
     } else if (message.includes('생성 완료')) {
         updateProgress(100, '생성 완료!');
