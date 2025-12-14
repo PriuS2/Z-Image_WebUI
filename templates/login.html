@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Z-Image WebUI - 로그인</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="/static/css/auth.css">
+    <link rel="stylesheet" href="/static/css/auth.css?v={{ cache_bust | default(1) }}">
 </head>
 <body>
     <div class="auth-container">
@@ -60,6 +60,15 @@
                 <button type="submit" class="auth-btn">
                     <i class="fas fa-sign-in-alt"></i>
                     로그인
+                </button>
+                
+                <div class="auth-divider">
+                    <span>또는</span>
+                </div>
+                
+                <button type="button" class="auth-btn guest-btn" id="guestLoginBtn">
+                    <i class="fas fa-user-secret"></i>
+                    게스트로 시작
                 </button>
             </form>
             
@@ -118,7 +127,7 @@
         </div>
     </div>
     
-    <script src="/static/js/auth.js"></script>
+    <script src="/static/js/auth.js?v={{ cache_bust | default(1) }}"></script>
 </body>
 </html>
 

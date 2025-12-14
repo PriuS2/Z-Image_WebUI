@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initTabs();
     initForms();
     initPasswordToggle();
+    initGuestLogin();
 });
 
 /**
@@ -91,7 +92,13 @@ async function handleLogin(e) {
     const username = document.getElementById('loginUsername').value.trim();
     const password = document.getElementById('loginPassword').value;
     
-    // 유효성 검사
+    // 아이디와 비밀번호가 모두 비어있으면 게스트 로그인
+    if (!username && !password) {
+        handleGuestLogin();
+        return;
+    }
+    
+    // 둘 중 하나만 비어있으면 에러
     if (!username || !password) {
         showError(errorDiv, '아이디와 비밀번호를 입력해주세요.');
         return;
@@ -246,6 +253,57 @@ function setButtonLoading(button, loading) {
         if (icon && icon.dataset.originalClass) {
             icon.className = icon.dataset.originalClass;
         }
+    }
+}
+
+/**
+ * 게스트 로그인 초기화
+ */
+function initGuestLogin() {
+    const guestBtn = document.getElementById('guestLoginBtn');
+    console.log('initGuestLogin called, button:', guestBtn);
+    if (guestBtn) {
+        guestBtn.addEventListener('click', (e) => {
+            console.log('Guest button clicked');
+            e.preventDefault();
+            e.stopPropagation();
+            handleGuestLogin();
+        });
+    }
+}
+
+/**
+ * 게스트 로그인 처리
+ */
+async function handleGuestLogin() {
+    const guestBtn = document.getElementById('guestLoginBtn');
+    const errorDiv = document.getElementById('loginError');
+    
+    // 버튼 비활성화
+    setButtonLoading(guestBtn, true);
+    clearErrors();
+    
+    try {
+        const response = await fetch('/api/auth/guest', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+            // 게스트 로그인 성공 - 메인 페이지로 이동
+            window.location.href = '/';
+        } else {
+            showError(errorDiv, data.detail || data.message || '게스트 로그인에 실패했습니다.');
+        }
+    } catch (error) {
+        console.error('Guest login error:', error);
+        showError(errorDiv, '서버와 통신 중 오류가 발생했습니다.');
+    } finally {
+        setButtonLoading(guestBtn, false);
     }
 }
 

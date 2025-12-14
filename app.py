@@ -868,7 +868,10 @@ async def login_page(request: Request):
         set_session_cookie(response, session)
         return response
     
-    response = templates.TemplateResponse("login.html", {"request": request})
+    response = templates.TemplateResponse("login.html", {
+        "request": request,
+        "cache_bust": int(time.time()),
+    })
     # 비로그인에서는 세션/쿠키를 만들지 않음
     clear_session_cookie(response)
     
@@ -1726,8 +1729,12 @@ async def login(request: Request, data: LoginRequest):
     # 로그인은 세션(로그인 쿠키) 발급이 필요하므로 생성 허용
     session = await get_session_from_request(request, create_if_missing=True)
     
-    # 인증
-    success, message, user = auth_manager.authenticate(data.username, data.password)
+    # 아이디와 비밀번호가 모두 비어있으면 게스트로 로그인
+    if not data.username.strip() and not data.password.strip():
+        success, message, user = auth_manager.get_or_create_guest()
+    else:
+        # 일반 인증
+        success, message, user = auth_manager.authenticate(data.username, data.password)
     
     if not success or not user:
         raise HTTPException(401, message)
@@ -1738,7 +1745,33 @@ async def login(request: Request, data: LoginRequest):
     response = JSONResponse(content={
         "success": True,
         "message": message,
-        "user": user.to_dict()
+        "user": user.to_dict(),
+        "is_guest": user.username == auth_manager.GUEST_USERNAME
+    })
+    set_session_cookie(response, session)
+    return response
+
+
+@app.post("/api/auth/guest")
+async def guest_login(request: Request):
+    """게스트 로그인"""
+    # 게스트 로그인은 세션(로그인 쿠키) 발급이 필요하므로 생성 허용
+    session = await get_session_from_request(request, create_if_missing=True)
+    
+    # 게스트 계정 가져오기 (없으면 생성)
+    success, message, user = auth_manager.get_or_create_guest()
+    
+    if not success or not user:
+        raise HTTPException(500, message)
+    
+    # 세션에 로그인 정보 연결
+    await session_manager.login_session(session.session_id, user.id, user.username)
+    
+    response = JSONResponse(content={
+        "success": True,
+        "message": message,
+        "user": user.to_dict(),
+        "is_guest": True
     })
     set_session_cookie(response, session)
     return response
