@@ -231,5 +231,10 @@ def get_favorites_manager_sync(session_id: str) -> FavoritesManager:
     return _session_favorites_managers[session_id]
 
 
+def clear_favorites_manager_cache(session_id: str) -> None:
+    """세션별 즐겨찾기 매니저 캐시 제거 (데이터 삭제/초기화용)"""
+    _session_favorites_managers.pop(session_id, None)
+
+
 # 레거시 호환: 전역 인스턴스 (마이그레이션용)
 favorites_manager = FavoritesManager()

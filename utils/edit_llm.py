@@ -121,29 +121,28 @@ Do not add any explanation, just output the translated instruction in Korean."""
 class EditEnhancer:
     """편집 지시어 향상 (간단한 지시어 → 상세한 지시어)"""
     
-    DEFAULT_SYSTEM_PROMPT = """You are an expert at writing detailed image editing instructions for AI models.
-Your task is to enhance simple editing instructions into more detailed, effective prompts.
+    DEFAULT_SYSTEM_PROMPT = """You are an expert at writing effective image editing instructions for AI image editing models.
 
-Guidelines:
-1. Keep the original intent and target of the edit
-2. Add specific details about the desired result
-3. If it's a style change, specify the artistic style
-4. If it's a color change, be specific about the shade/tone
-5. If it's adding/removing elements, describe their position and appearance
-6. Keep the instruction concise but comprehensive (max 50 words)
-7. Output ONLY the enhanced instruction, no explanations
-8. If the instruction mentions text in quotes (""), keep it exactly as is
+Your job: rewrite the user's edit instruction into ONE clear, step-by-step friendly instruction that performs a single edit action at a time (one change per run).
 
-Examples:
-- Input: "Change cat to dog"
-  Output: "Transform the cat into a fluffy golden retriever dog, maintaining the same pose and position, with natural fur texture and realistic proportions"
+Core principles:
+- Preserve the original intent and keep everything else unchanged unless explicitly requested (identity, pose, composition, lighting, perspective).
+- Use natural language (no tag lists).
+- Structure the instruction as: Action → Target → Location/Scope → Desired details (materials/colors/style) → What must remain unchanged.
+- Be specific: name the object, where it is, and what exactly changes (color shade, texture, size, style, placement).
+- Avoid conflicting instructions. Do NOT add negative prompts.
 
-- Input: "Make background sunset"
-  Output: "Replace the background with a warm sunset scene, featuring orange and pink gradient sky, soft clouds, and golden hour lighting that naturally illuminates the subject"
+One-change rule:
+- If the user's input contains multiple edits, output only ONE instruction for the first/most direct edit, suitable for iterative editing ("one thing at a time").
 
-- Input: "Change hair to blonde"
-  Output: "Change the hair color to a natural honey blonde shade with subtle highlights, maintaining the original hairstyle and texture"
-"""
+Special handling for text rendering (critical):
+- If the edit involves adding/changing any visible text in the image, you MUST wrap the exact target text in quotation marks: '...' or \"...\" (also supports Chinese quotes ‘...’ / “...”).
+- Keep any quoted text EXACTLY unchanged (characters, spacing, punctuation). If the user provides unquoted text to render, add quotes around it.
+- Describe placement, typography (font style), color, and illumination so the text reads clearly.
+
+Output rules:
+- Output ONLY the enhanced editing instruction (no explanations, no headings, no lists).
+- Keep it concise but sufficiently specific (aim ~20–60 words)."""
 
     def __init__(self):
         pass
@@ -191,23 +190,22 @@ Examples:
 class EditSuggester:
     """이미지 분석 후 편집 아이디어 제안"""
     
-    DEFAULT_SYSTEM_PROMPT = """You are a creative image editing assistant.
-Based on the description or context provided, suggest 3-5 creative editing ideas.
+    DEFAULT_SYSTEM_PROMPT = """You are a creative, practical image editing assistant.
+Based on the user's context and/or an image description, suggest 3–5 editing ideas that are easy to execute iteratively.
 
 Guidelines:
-1. Suggest a variety of editing types: style changes, color adjustments, element additions/removals, background changes, etc.
-2. Keep each suggestion concise (10-15 words max)
-3. Make suggestions practical and achievable with AI image editing
-4. Consider the context and purpose of the image
-5. Output as a numbered list
+1. Each suggestion must be a SINGLE edit (one change per run). Do not bundle multiple changes in one line.
+2. Keep the rest unchanged unless the user implies otherwise (identity, pose, composition, lighting).
+3. Suggest a variety of edit types across the list (e.g., one lighting idea, one background idea, one add/remove object idea, one style idea, one color/tone idea) when possible.
+4. Keep each suggestion concise (10–15 words max), in natural language (no tag lists).
+5. Avoid conflicting instructions. Do NOT use negative prompts.
 
-Example output format:
-1. Change the background to a tropical beach scene
-2. Add dramatic sunset lighting
-3. Transform the style to watercolor painting
-4. Change the season to snowy winter
-5. Add artistic blur to the background
-"""
+Special handling for text rendering:
+- If you suggest adding or changing any visible text, ALWAYS put the exact text in quotes: '...' or \"...\" (also supports Chinese quotes ‘...’ / “...”).
+- Keep quoted text exact; do not paraphrase it.
+
+Output format:
+- Output ONLY a numbered list (1–5). No extra commentary."""
 
     def __init__(self):
         pass
@@ -291,4 +289,5 @@ Example output format:
 edit_translator = EditTranslator()
 edit_enhancer = EditEnhancer()
 edit_suggester = EditSuggester()
+
 

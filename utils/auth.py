@@ -38,6 +38,10 @@ class AuthManager:
     MIN_USERNAME_LENGTH = 3
     MAX_USERNAME_LENGTH = 50
     
+    # 게스트 계정
+    GUEST_USERNAME = "guest"
+    GUEST_PASSWORD = "guest"
+    
     def __init__(self):
         pass
     
@@ -356,6 +360,64 @@ class AuthManager:
                 
         except Exception as e:
             return False, f"사용자 삭제 중 오류가 발생했습니다: {str(e)}"
+    
+    def get_or_create_guest(self) -> tuple[bool, str, Optional[User]]:
+        """
+        게스트 계정 가져오기 (없으면 생성)
+        Returns: (성공 여부, 메시지, User 객체)
+        """
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                
+                # 게스트 계정 조회
+                cursor.execute(
+                    "SELECT * FROM users WHERE username = ?",
+                    (self.GUEST_USERNAME,)
+                )
+                row = cursor.fetchone()
+                
+                if row:
+                    # 기존 게스트 계정 반환
+                    # 마지막 로그인 시간 업데이트
+                    cursor.execute(
+                        "UPDATE users SET last_login = ? WHERE id = ?",
+                        (datetime.now().isoformat(), row['id'])
+                    )
+                    
+                    user = User(
+                        id=row['id'],
+                        username=row['username'],
+                        created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else datetime.now(),
+                        last_login=datetime.now()
+                    )
+                    return True, "게스트로 로그인되었습니다.", user
+                
+                # 게스트 계정 생성
+                password_hash, _ = self._hash_password(self.GUEST_PASSWORD)
+                
+                cursor.execute(
+                    "INSERT INTO users (username, password_hash, last_login) VALUES (?, ?, ?)",
+                    (self.GUEST_USERNAME, password_hash, datetime.now().isoformat())
+                )
+                user_id = cursor.lastrowid
+                
+                user = User(
+                    id=user_id,
+                    username=self.GUEST_USERNAME,
+                    created_at=datetime.now(),
+                    last_login=datetime.now()
+                )
+                
+                return True, "게스트 계정이 생성되었습니다.", user
+                
+        except Exception as e:
+            return False, f"게스트 로그인 중 오류가 발생했습니다: {str(e)}", None
+    
+    def is_guest(self, user_id: int) -> bool:
+        """사용자가 게스트인지 확인"""
+        user = self.get_user_by_id(user_id)
+        return user is not None and user.username == self.GUEST_USERNAME
 
 
 # 전역 인스턴스

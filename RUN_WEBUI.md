@@ -7,30 +7,6 @@
 pip install -r requirements.txt
 ```
 
-### 2. (선택) Real-ESRGAN 설치 (업스케일링용)
-
-**Linux/macOS:**
-```bash
-pip install -r requirements-upscale.txt
-```
-
-**Windows:** (빌드 오류 발생 시)
-```bash
-# 방법 1: Visual Studio Build Tools 설치 후 시도
-pip install -r requirements-upscale.txt
-
-# 방법 2: 빌드 없이 설치 (권장)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-pip install realesrgan --no-deps
-pip install facexlib gfpgan
-
-# 방법 3: 업스케일링 없이 사용 (Lanczos 리사이즈로 대체됨)
-# → 별도 설치 없이 앱 실행 가능
-```
-
-> ⚠️ Real-ESRGAN 미설치 시에도 앱은 정상 작동합니다.  
-> 업스케일링 시 Lanczos 리사이즈로 자동 대체됩니다.
-
 ## 🚀 실행
 
 ```bash
@@ -55,7 +31,6 @@ python app.py
 ### 갤러리 탭
 - 생성된 이미지 목록 확인
 - 이미지 메타데이터 (프롬프트, 시드 등) 확인
-- Real-ESRGAN 업스케일링 (2x/4x)
 
 ### 히스토리 탭
 - 사용한 프롬프트 기록 확인
@@ -90,10 +65,6 @@ python app.py
 - 설정 탭에서 OpenAI API 키 확인
 - API 키 잔액/유효성 확인
 
-### 업스케일링 미작동
-- Real-ESRGAN 설치 확인
-- 미설치 시 Lanczos 리사이즈로 대체됨
-
 ## 📁 파일 구조
 
 ```
@@ -109,7 +80,7 @@ Zimage/
 │   ├── history.py      # 히스토리 관리
 │   ├── favorites.py    # 즐겨찾기 관리
 │   ├── settings.py     # 설정 관리
-│   └── upscaler.py     # 업스케일링
+│   └── (기타 유틸리티)
 ├── data/               # 사용자 데이터 (자동 생성)
 ├── outputs/            # 생성 이미지 저장
 └── requirements.txt    # 의존성 패키지

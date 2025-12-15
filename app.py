@@ -48,14 +48,13 @@ from utils.settings import settings
 from utils.translator import translator
 from utils.prompt_enhancer import prompt_enhancer
 from utils.metadata import ImageMetadata, filename_generator
-from utils.history import get_history_manager_sync, HistoryManager
-from utils.favorites import get_favorites_manager_sync, FavoritesManager
-from utils.upscaler import upscaler, REALESRGAN_AVAILABLE
+from utils.history import get_history_manager_sync, HistoryManager, clear_history_manager_cache
+from utils.favorites import get_favorites_manager_sync, FavoritesManager, clear_favorites_manager_cache
 from utils.session import session_manager, is_localhost, SessionManager, SessionInfo
 from utils.queue_manager import generation_queue, GenerationQueueManager
 from utils.auth import auth_manager, User
 from utils.longcat_edit import longcat_edit_manager
-from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager
+from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager, clear_edit_history_manager_cache
 from utils.edit_llm import edit_translator, edit_enhancer, edit_suggester
 from utils.gpu_monitor import gpu_monitor
 
@@ -848,7 +847,9 @@ async def home(request: Request):
         "user": {
             "id": session.user_id,
             "username": session.username,
-        }
+        },
+        # 정적 파일 캐시로 인해 UI 변경이 반영되지 않는 문제 방지
+        "cache_bust": int(time.time()),
     })
     set_session_cookie(response, session)
     
@@ -867,7 +868,10 @@ async def login_page(request: Request):
         set_session_cookie(response, session)
         return response
     
-    response = templates.TemplateResponse("login.html", {"request": request})
+    response = templates.TemplateResponse("login.html", {
+        "request": request,
+        "cache_bust": int(time.time()),
+    })
     # 비로그인에서는 세션/쿠키를 만들지 않음
     clear_session_cookie(response)
     
@@ -891,7 +895,6 @@ async def get_status(request: Request):
         "device": device or get_device(),
         "vram": get_vram_info(),
         "is_generating": queue_status["is_processing"],
-        "upscaler_available": REALESRGAN_AVAILABLE,
         "queue_length": queue_status["queue_length"],
         "connected_users": ws_manager.get_session_count(),
         # 프론트 호환 필드: 로그인 시 계정 키(user_{id}), 비로그인 시 None
@@ -1726,8 +1729,12 @@ async def login(request: Request, data: LoginRequest):
     # 로그인은 세션(로그인 쿠키) 발급이 필요하므로 생성 허용
     session = await get_session_from_request(request, create_if_missing=True)
     
-    # 인증
-    success, message, user = auth_manager.authenticate(data.username, data.password)
+    # 아이디와 비밀번호가 모두 비어있으면 게스트로 로그인
+    if not data.username.strip() and not data.password.strip():
+        success, message, user = auth_manager.get_or_create_guest()
+    else:
+        # 일반 인증
+        success, message, user = auth_manager.authenticate(data.username, data.password)
     
     if not success or not user:
         raise HTTPException(401, message)
@@ -1738,7 +1745,33 @@ async def login(request: Request, data: LoginRequest):
     response = JSONResponse(content={
         "success": True,
         "message": message,
-        "user": user.to_dict()
+        "user": user.to_dict(),
+        "is_guest": user.username == auth_manager.GUEST_USERNAME
+    })
+    set_session_cookie(response, session)
+    return response
+
+
+@app.post("/api/auth/guest")
+async def guest_login(request: Request):
+    """게스트 로그인"""
+    # 게스트 로그인은 세션(로그인 쿠키) 발급이 필요하므로 생성 허용
+    session = await get_session_from_request(request, create_if_missing=True)
+    
+    # 게스트 계정 가져오기 (없으면 생성)
+    success, message, user = auth_manager.get_or_create_guest()
+    
+    if not success or not user:
+        raise HTTPException(500, message)
+    
+    # 세션에 로그인 정보 연결
+    await session_manager.login_session(session.session_id, user.id, user.username)
+    
+    response = JSONResponse(content={
+        "success": True,
+        "message": message,
+        "user": user.to_dict(),
+        "is_guest": True
     })
     set_session_cookie(response, session)
     return response
@@ -1866,32 +1899,108 @@ async def admin_delete_user(request: Request, user_id: int):
     }
 
 
-@app.get("/api/admin/sessions")
-async def get_all_sessions(request: Request):
-    """접속 사용자(계정) 목록 (관리자 전용)"""
+@app.delete("/api/admin/users/{user_id}/data")
+async def admin_delete_user_data(request: Request, user_id: int):
+    """사용자 데이터 삭제 (계정 유지, 관리자 전용)
+
+    - 계정(DB)은 유지
+    - 히스토리/즐겨찾기/편집 히스토리/설정 등 세션 데이터 폴더 삭제
+    - 생성/편집 결과 이미지 등 outputs 폴더 삭제
+    """
     require_admin(request)
 
-    users = []
-    # WebSocket 연결 키는 현재 계정(data_id)로 통일되어 있음
-    for data_id in sorted(ws_manager.get_connected_keys()):
-        user_id = _parse_user_id_from_data_id(data_id)
-        user = auth_manager.get_user_by_id(user_id) if user_id is not None else None
-        username = user.username if user else None
+    data_id = f"user_{user_id}"
 
-        # last_activity는 (있다면) 해당 유저의 활성 세션에서 가져옴
-        session = session_manager.get_session_by_user(user_id) if user_id is not None else None
-        last_activity = session.last_activity if session else None
+    # 진행 중/대기 중 작업이 있으면 먼저 제거(파일 재생성/경합 방지)
+    await generation_queue.remove_session_items(data_id)
 
-        users.append({
-            "data_id": data_id,           # user_{id}
+    # 사용자 데이터 삭제(세션 폴더 + outputs 폴더)
+    await session_manager.delete_user_data(user_id)
+
+    # 캐시 제거: 삭제 직후 기존 캐시가 다시 파일을 저장하는 것을 방지
+    clear_history_manager_cache(data_id)
+    clear_favorites_manager_cache(data_id)
+    clear_edit_history_manager_cache(data_id)
+
+    return {
+        "success": True,
+        "message": "사용자 데이터가 삭제되었습니다. (계정은 유지됩니다.)",
+        "data_id": data_id,
+    }
+
+
+@app.get("/api/admin/sessions")
+async def get_all_sessions(request: Request):
+    """사용자(계정) 세션/접속 현황 목록 (관리자 전용)
+
+    기존에는 WebSocket '연결된' 계정만 반환했지만,
+    UI(세션 관리)에서 등록된 계정 전체가 보이길 기대하는 경우가 많아
+    등록된 사용자 목록 + 연결 여부를 함께 내려준다.
+    """
+    require_admin(request)
+
+    connected_keys = set(ws_manager.get_connected_keys())
+
+    rows: List[Dict[str, Any]] = []
+
+    # 1) 등록된 사용자 전체를 포함
+    all_users = auth_manager.get_all_users()
+    for u in all_users:
+        user_id = u.get("id")
+        if user_id is None:
+            continue
+
+        data_id = f"user_{user_id}"
+        connected = data_id in connected_keys
+
+        # last_activity: 세션 매니저의 활동 시간(있으면) → 없으면 last_login(있으면)
+        session = session_manager.get_session_by_user(user_id)
+        last_activity_ts: Optional[float] = None
+        last_activity_iso: Optional[str] = None
+        if session:
+            last_activity_ts = session.last_activity
+            last_activity_iso = datetime.fromtimestamp(session.last_activity).isoformat()
+        else:
+            # auth_manager.get_all_users()는 last_login을 ISO 문자열로 내려줌 (또는 None)
+            last_login = u.get("last_login")
+            if last_login:
+                last_activity_iso = last_login
+
+        rows.append({
+            "data_id": data_id,
             "user_id": user_id,
-            "username": username,
-            "last_activity": last_activity,
+            "username": u.get("username"),
+            "last_activity": last_activity_iso,
             "data_size": _get_data_size_by_data_id(data_id),
-            "connected": True,
+            "connected": connected,
+            "_sort_ts": last_activity_ts,  # 정렬용(응답에는 제거)
         })
 
-    return {"users": users}
+    # 2) 예외적으로 연결은 있는데 DB에 없는 키가 있으면 추가로 노출(디버깅/운영 편의)
+    known_data_ids = {r["data_id"] for r in rows if r.get("data_id")}
+    for data_id in sorted(connected_keys):
+        if data_id in known_data_ids:
+            continue
+        user_id = _parse_user_id_from_data_id(data_id)
+        session = session_manager.get_session_by_user(user_id) if user_id is not None else None
+        last_activity_iso = datetime.fromtimestamp(session.last_activity).isoformat() if session else None
+
+        rows.append({
+            "data_id": data_id,
+            "user_id": user_id,
+            "username": None,
+            "last_activity": last_activity_iso,
+            "data_size": _get_data_size_by_data_id(data_id),
+            "connected": True,
+            "_sort_ts": session.last_activity if session else None,
+        })
+
+    # 정렬: 연결된 계정 우선, 최근 활동 우선
+    rows.sort(key=lambda r: (bool(r.get("connected")), r.get("_sort_ts") or 0), reverse=True)
+    for r in rows:
+        r.pop("_sort_ts", None)
+
+    return {"users": rows}
 
 
 @app.delete("/api/admin/sessions/{session_id}")

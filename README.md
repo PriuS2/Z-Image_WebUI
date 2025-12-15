@@ -25,7 +25,6 @@ Z-Image WebUI는 [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-
 - 🇰🇷 **한국어 지원**: 한국어 프롬프트 자동 번역 및 AI 향상
 - 💾 **VRAM 절약**: GGUF 양자화로 3.8GB~7.2GB VRAM만으로 실행 가능
 - 🤖 **AI 프롬프트 향상**: LLM을 활용한 프롬프트 자동 개선
-- 🖼️ **업스케일링**: Real-ESRGAN 기반 고화질 업스케일링
 
 ---
 
@@ -162,16 +161,6 @@ pip install -r requirements.txt
 > ⚠️ **중요**: GGUF 양자화 모델 지원을 위해 diffusers GitHub 버전이 필요합니다.
 > requirements.txt에 이미 포함되어 있습니다.
 
-### 4. (선택) Real-ESRGAN 설치
-
-업스케일링 기능을 사용하려면:
-
-```bash
-pip install -r requirements-upscale.txt
-```
-
-> Windows에서 빌드 오류 발생 시 [RUN_WEBUI.md](RUN_WEBUI.md)의 해결 방법 참조
-
 ---
 
 ## 🎯 사용 방법
@@ -287,7 +276,7 @@ Z-Image_WebUI/
 │   ├── history.py         # 히스토리 관리
 │   ├── favorites.py       # 즐겨찾기 관리
 │   ├── settings.py        # 설정 관리
-│   └── upscaler.py        # Real-ESRGAN 업스케일링
+│   └── (기타 유틸리티)
 ├── static/
 │   ├── css/style.css      # 스타일시트
 │   └── js/app.js          # 프론트엔드 JavaScript
@@ -300,7 +289,6 @@ Z-Image_WebUI/
 │   └── favorites.json
 ├── outputs/               # 생성된 이미지 저장
 ├── requirements.txt       # 메인 의존성
-├── requirements-upscale.txt # 업스케일링 의존성
 ├── HowToUse.md            # 상세 사용 가이드
 ├── Setup.bat              # Windows 설치 스크립트
 └── Run.bat                # Windows 실행 스크립트
@@ -329,15 +317,6 @@ pip install --force-reinstall git+https://github.com/huggingface/diffusers
 1. 설정에서 LLM API 키 확인
 2. Provider가 올바르게 선택되었는지 확인
 3. 인터넷 연결 확인
-
-### Windows에서 Real-ESRGAN 설치 오류
-
-```bash
-# Visual Studio Build Tools 설치 후 시도
-# 또는 --no-deps 옵션으로 설치
-pip install realesrgan --no-deps
-pip install facexlib gfpgan
-```
 
 ---
 
@@ -381,7 +360,6 @@ python inference.py
 - [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) - 이미지 생성 모델
 - [jayn7/Z-Image-Turbo-GGUF](https://huggingface.co/jayn7/Z-Image-Turbo-GGUF) - GGUF 양자화 모델
 - [Hugging Face Diffusers](https://github.com/huggingface/diffusers) - 파이프라인 프레임워크
-- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) - 업스케일링
 
 ---
 

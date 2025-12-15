@@ -372,6 +372,53 @@ body {
     to { transform: rotate(360deg); }
 }
 
+/* 구분선 */
+.auth-divider {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin: 8px 0;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+.auth-divider span {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* 게스트 버튼 */
+.guest-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    margin-top: 0;
+}
+
+.guest-btn:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--text-muted);
+    color: var(--text-primary);
+    box-shadow: none;
+    transform: translateY(-2px);
+}
+
+.guest-btn i {
+    color: var(--text-muted);
+}
+
+.guest-btn:hover i {
+    color: var(--accent);
+}
+
 /* 푸터 */
 .auth-footer {
     margin-top: 28px;
