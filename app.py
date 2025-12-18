@@ -73,6 +73,355 @@ edit_auto_unload_task = None  # 편집 모델 자동 언로드 태스크
 edit_model_lock = asyncio.Lock()  # 편집 모델 로드/언로드 잠금
 
 
+# ============= 모델별 예상 VRAM 사용량 (GB) =============
+# 생성 모델: 양자화에 따라 다름
+GENERATION_MODEL_VRAM = {
+    "BF16 (기본, 최고품질)": 14.0,
+    "GGUF Q8_0 (7.22GB, 고품질)": 7.5,
+    "GGUF Q6_K (5.91GB, 고품질)": 6.0,
+    "GGUF Q5_K_M (5.52GB, 균형)": 5.8,
+    "GGUF Q5_K_S (5.19GB, 균형)": 5.5,
+    "GGUF Q4_K_M (4.98GB, 추천)": 5.2,
+    "GGUF Q4_K_S (4.66GB, 경량)": 4.9,
+    "GGUF Q3_K_M (4.12GB, 저사양)": 4.4,
+    "GGUF Q3_K_S (3.79GB, 최저사양)": 4.1,
+}
+
+# 편집 모델: 양자화에 따라 다름
+EDIT_MODEL_VRAM = {
+    "BF16 (기본, 최고품질)": 22.0,
+    "INT8 (절반 용량, 고품질)": 13.0,
+    "INT4 (1/4 용량, 균형)": 9.0,
+}
+
+
+# ============= 자동 모델 로드/언로드 함수 =============
+async def unload_generation_model_internal():
+    """생성 모델 내부 언로드 (lock 없이)"""
+    global pipe, current_model, device
+    
+    if pipe is None:
+        return
+    
+    print("🔄 생성 모델 자동 언로드 중...")
+    
+    # GPU 모니터에서 모델 등록 해제
+    gpu_monitor.unregister_model("Z-Image-Turbo")
+    
+    del pipe
+    pipe = None
+    old_model = current_model
+    current_model = None
+    
+    # GPU 캐시 정리
+    gpu_monitor.clear_cache(device)
+    gc.collect()
+    
+    # 클라이언트에게 알림
+    await ws_manager.broadcast({
+        "type": "model_status_change",
+        "model_loaded": False,
+        "current_model": None
+    })
+    await ws_manager.broadcast({
+        "type": "system",
+        "content": f"🔄 VRAM 확보를 위해 생성 모델({old_model})이 자동 언로드되었습니다."
+    })
+    
+    print(f"✅ 생성 모델 자동 언로드 완료. VRAM: {get_vram_info()}")
+
+
+async def unload_edit_model_internal():
+    """편집 모델 내부 언로드 (lock 없이)"""
+    if not longcat_edit_manager.is_loaded:
+        return
+    
+    print("🔄 편집 모델 자동 언로드 중...")
+    
+    old_model = longcat_edit_manager.current_model
+    
+    # 편집 모델 언로드 (내부 lock 사용)
+    success, message = await longcat_edit_manager.unload_model()
+    
+    if success:
+        # 클라이언트에게 알림
+        await ws_manager.broadcast({
+            "type": "edit_model_status_change",
+            "model_loaded": False,
+            "current_model": None
+        })
+        await ws_manager.broadcast({
+            "type": "system",
+            "content": f"🔄 VRAM 확보를 위해 편집 모델({old_model})이 자동 언로드되었습니다."
+        })
+        
+        print(f"✅ 편집 모델 자동 언로드 완료. VRAM: {get_vram_info()}")
+
+
+async def ensure_generation_model_loaded(session_id: str = None) -> tuple[bool, str]:
+    """
+    생성 모델이 로드되어 있는지 확인하고, 없으면 자동 로드
+    VRAM이 부족하면 편집 모델을 먼저 언로드
+    
+    Args:
+        session_id: 메시지를 보낼 세션 ID (None이면 broadcast)
+    
+    Returns:
+        (success, message)
+    """
+    global pipe, current_model, device, model_lock
+    
+    # 이미 로드되어 있으면 바로 반환
+    if pipe is not None:
+        return True, "모델이 이미 로드되어 있습니다."
+    
+    # 모델 잠금 확인
+    if model_lock.locked():
+        return False, "다른 사용자가 모델을 로드/언로드 중입니다. 잠시 후 다시 시도해주세요."
+    
+    async with model_lock:
+        # 다시 확인 (lock 대기 중 로드되었을 수 있음)
+        if pipe is not None:
+            return True, "모델이 이미 로드되어 있습니다."
+        
+        # 설정에서 양자화 옵션 가져오기
+        quantization = settings.get("quantization", "BF16 (기본, 최고품질)")
+        cpu_offload = settings.get("cpu_offload", False)
+        target_device_setting = settings.get("generation_gpu", DEFAULT_GPU_SETTINGS["generation_gpu"])
+        
+        # 필요한 VRAM 계산
+        required_vram = GENERATION_MODEL_VRAM.get(quantization, 14.0)
+        
+        # 현재 VRAM 여유 확인
+        resolved_device = get_device(target_device_setting)
+        free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
+        
+        async def send_message(msg: str, msg_type: str = "system"):
+            if session_id:
+                await ws_manager.send_to_session(session_id, {"type": msg_type, "content": msg})
+            else:
+                await ws_manager.broadcast({"type": msg_type, "content": msg})
+        
+        # VRAM이 부족하면 편집 모델 언로드
+        if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
+            if longcat_edit_manager.is_loaded:
+                await send_message(f"⚠️ VRAM 부족 ({free_vram:.1f}GB < {required_vram:.1f}GB). 편집 모델을 언로드합니다...")
+                await unload_edit_model_internal()
+                
+                # 언로드 후 VRAM 재확인
+                await asyncio.sleep(0.5)  # GPU 캐시 정리 대기
+                free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
+        
+        # 여전히 부족하면 경고만 하고 진행 (CPU 오프로딩 가능)
+        if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
+            await send_message(f"⚠️ VRAM이 여전히 부족합니다 ({free_vram:.1f}GB). CPU 오프로딩으로 시도합니다...")
+            cpu_offload = True
+        
+        await send_message(f"🔄 생성 모델 자동 로드 중... ({quantization})")
+        
+        # 모델 로드 진행
+        try:
+            device = get_device(target_device_setting)
+            
+            quant_info = QUANTIZATION_OPTIONS.get(quantization)
+            if not quant_info:
+                return False, f"지원하지 않는 양자화: {quantization}"
+            
+            repo_id = quant_info["repo"]
+            dtype = quant_info["type"]
+            is_gguf = quant_info.get("is_gguf", False)
+            
+            # 진행 상황 브로드캐스트
+            async def progress(percent, label, detail=""):
+                await ws_manager.broadcast({
+                    "type": "model_progress",
+                    "progress": percent,
+                    "label": label,
+                    "detail": detail,
+                    "stage": "loading" if percent < 100 else "complete"
+                })
+            
+            await progress(5, "🔧 모델 자동 로드 시작...", f"양자화: {dtype}")
+            
+            from diffusers import ZImagePipeline
+            
+            if is_gguf:
+                from diffusers import ZImageTransformer2DModel, GGUFQuantizationConfig
+                from huggingface_hub import hf_hub_download
+                
+                filename = quant_info["filename"]
+                
+                await progress(15, "📥 GGUF 모델 다운로드 확인 중...", f"파일: {filename}")
+                
+                gguf_path = await asyncio.to_thread(
+                    hf_hub_download,
+                    repo_id=repo_id,
+                    filename=filename,
+                    cache_dir=str(MODELS_DIR)
+                )
+                
+                await progress(35, "🔄 GGUF Transformer 로딩 중...", f"양자화 타입: {dtype}")
+                
+                transformer = await asyncio.to_thread(
+                    ZImageTransformer2DModel.from_single_file,
+                    gguf_path,
+                    quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
+                    torch_dtype=torch.bfloat16,
+                )
+                
+                await progress(60, "🔗 파이프라인 구성 중...", "")
+                
+                pipe = await asyncio.to_thread(
+                    ZImagePipeline.from_pretrained,
+                    "Tongyi-MAI/Z-Image-Turbo",
+                    transformer=transformer,
+                    torch_dtype=torch.bfloat16,
+                )
+            else:
+                await progress(15, "📥 모델 다운로드 확인 중...", f"저장소: {repo_id}")
+                
+                load_kwargs = {
+                    "torch_dtype": torch.bfloat16,
+                    "cache_dir": str(MODELS_DIR),
+                }
+                
+                await progress(35, "🔄 모델 파일 로딩 중...", "")
+                
+                pipe = await asyncio.to_thread(
+                    ZImagePipeline.from_pretrained,
+                    repo_id,
+                    **load_kwargs
+                )
+            
+            await progress(80, f"🚀 {device.upper()}로 모델 전송 중...", "")
+            
+            if cpu_offload:
+                await asyncio.to_thread(pipe.enable_model_cpu_offload)
+            else:
+                await asyncio.to_thread(pipe.to, device)
+            
+            current_model = quantization
+            
+            # GPU 모니터에 모델 등록
+            gpu_monitor.register_model("Z-Image-Turbo", device)
+            
+            await progress(100, "✅ 모델 자동 로드 완료!", f"VRAM: {get_vram_info()}")
+            
+            await ws_manager.broadcast({
+                "type": "model_status_change",
+                "model_loaded": True,
+                "current_model": current_model,
+                "device": device
+            })
+            
+            return True, f"생성 모델 자동 로드 완료: {quantization}"
+            
+        except Exception as e:
+            await ws_manager.broadcast({
+                "type": "model_progress",
+                "progress": 0,
+                "label": "❌ 자동 로드 실패",
+                "detail": str(e),
+                "stage": "error"
+            })
+            return False, f"생성 모델 자동 로드 실패: {str(e)}"
+
+
+async def ensure_edit_model_loaded(session_id: str = None) -> tuple[bool, str]:
+    """
+    편집 모델이 로드되어 있는지 확인하고, 없으면 자동 로드
+    VRAM이 부족하면 생성 모델을 먼저 언로드
+    
+    Args:
+        session_id: 메시지를 보낼 세션 ID (None이면 broadcast)
+    
+    Returns:
+        (success, message)
+    """
+    global pipe, current_model, edit_model_lock
+    
+    # 이미 로드되어 있으면 바로 반환
+    if longcat_edit_manager.is_loaded:
+        return True, "편집 모델이 이미 로드되어 있습니다."
+    
+    # 모델 잠금 확인
+    if edit_model_lock.locked():
+        return False, "다른 사용자가 편집 모델을 로드/언로드 중입니다. 잠시 후 다시 시도해주세요."
+    
+    async with edit_model_lock:
+        # 다시 확인 (lock 대기 중 로드되었을 수 있음)
+        if longcat_edit_manager.is_loaded:
+            return True, "편집 모델이 이미 로드되어 있습니다."
+        
+        # 설정에서 양자화 옵션 가져오기
+        quantization = settings.get("edit_quantization", "BF16 (기본, 최고품질)")
+        cpu_offload = settings.get("edit_cpu_offload", True)
+        target_device_setting = settings.get("edit_gpu", DEFAULT_GPU_SETTINGS["edit_gpu"])
+        
+        # 필요한 VRAM 계산
+        required_vram = EDIT_MODEL_VRAM.get(quantization, 22.0)
+        
+        # 현재 VRAM 여유 확인
+        resolved_device = longcat_edit_manager.get_device(target_device_setting)
+        free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
+        
+        async def send_message(msg: str, msg_type: str = "edit_system"):
+            if session_id:
+                await ws_manager.send_to_session(session_id, {"type": msg_type, "content": msg})
+            else:
+                await ws_manager.broadcast({"type": msg_type, "content": msg})
+        
+        # VRAM이 부족하면 생성 모델 언로드
+        if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
+            if pipe is not None:
+                # 생성 모델 lock 확인
+                if model_lock.locked():
+                    return False, "생성 모델이 사용 중입니다. 잠시 후 다시 시도해주세요."
+                
+                async with model_lock:
+                    await send_message(f"⚠️ VRAM 부족 ({free_vram:.1f}GB < {required_vram:.1f}GB). 생성 모델을 언로드합니다...")
+                    await unload_generation_model_internal()
+                
+                # 언로드 후 VRAM 재확인
+                await asyncio.sleep(0.5)  # GPU 캐시 정리 대기
+                free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
+        
+        # 여전히 부족하면 경고만 하고 진행 (CPU 오프로딩 활성화)
+        if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
+            await send_message(f"⚠️ VRAM이 여전히 부족합니다 ({free_vram:.1f}GB). CPU 오프로딩으로 시도합니다...")
+            cpu_offload = True
+        
+        await send_message(f"🔄 편집 모델 자동 로드 중... ({quantization})")
+        
+        # 진행 상황 콜백
+        async def progress_callback(percent, label, detail):
+            await ws_manager.broadcast({
+                "type": "edit_model_progress",
+                "progress": percent,
+                "label": label,
+                "detail": detail,
+                "stage": "loading" if percent < 100 else "complete"
+            })
+        
+        # 모델 로드
+        success, message = await longcat_edit_manager.load_model(
+            quantization=quantization,
+            cpu_offload=cpu_offload,
+            target_device=target_device_setting,
+            progress_callback=progress_callback
+        )
+        
+        if success:
+            await ws_manager.broadcast({
+                "type": "edit_model_status_change",
+                "model_loaded": True,
+                "current_model": longcat_edit_manager.current_model,
+                "device": longcat_edit_manager.device
+            })
+        
+        return success, message
+
+
 # ============= 자동 언로드 관련 함수 =============
 def update_activity():
     """마지막 활동 시간 업데이트"""
@@ -1186,8 +1535,11 @@ async def generate_image(request: Request, gen_request: GenerateRequest):
     session = await get_session_from_request(request)
     require_auth(session)
     
+    # 모델이 로드되지 않았으면 자동 로드
     if pipe is None:
-        raise HTTPException(400, "모델이 로드되지 않았습니다.")
+        success, message = await ensure_generation_model_loaded(session.data_id)
+        if not success:
+            raise HTTPException(400, f"모델 자동 로드 실패: {message}")
     
     if not gen_request.prompt.strip():
         raise HTTPException(400, "프롬프트를 입력해주세요.")
@@ -2369,8 +2721,11 @@ async def edit_image(
     session = await get_session_from_request(request)
     require_auth(session)
     
+    # 편집 모델이 로드되지 않았으면 자동 로드
     if not longcat_edit_manager.is_loaded:
-        raise HTTPException(400, "편집 모델이 로드되지 않았습니다.")
+        success, message = await ensure_edit_model_loaded(session.data_id)
+        if not success:
+            raise HTTPException(400, f"편집 모델 자동 로드 실패: {message}")
     
     if not prompt.strip():
         raise HTTPException(400, "편집 프롬프트를 입력해주세요.")

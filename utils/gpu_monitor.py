@@ -291,6 +291,69 @@ class GPUMonitor:
             with torch.cuda.device(device_id):
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
+    
+    def get_free_vram(self, device: Optional[str] = None) -> int:
+        """
+        특정 GPU 또는 가장 여유 있는 GPU의 여유 VRAM 반환 (bytes)
+        
+        Args:
+            device: 특정 GPU 디바이스 (None이면 가장 여유 있는 GPU)
+        
+        Returns:
+            여유 VRAM (bytes), CUDA 미사용 시 0
+        """
+        if not self.cuda_available:
+            return 0
+        
+        if device is not None and device.startswith("cuda"):
+            device_id = int(device.split(":")[1]) if ":" in device else 0
+            info = self.get_gpu_info(device_id)
+            return info.get("memory", {}).get("free", 0)
+        
+        # 가장 여유 있는 GPU 찾기
+        max_free = 0
+        for i in range(self.gpu_count):
+            info = self.get_gpu_info(i)
+            free = info.get("memory", {}).get("free", 0)
+            if free > max_free:
+                max_free = free
+        
+        return max_free
+    
+    def get_free_vram_gb(self, device: Optional[str] = None) -> float:
+        """
+        여유 VRAM을 GB 단위로 반환
+        
+        Args:
+            device: 특정 GPU 디바이스 (None이면 가장 여유 있는 GPU)
+        
+        Returns:
+            여유 VRAM (GB)
+        """
+        return self.get_free_vram(device) / (1024 ** 3)
+    
+    def has_enough_vram(self, required_gb: float, device: Optional[str] = None, buffer_gb: float = 1.0) -> bool:
+        """
+        필요한 VRAM이 충분한지 확인
+        
+        Args:
+            required_gb: 필요한 VRAM (GB)
+            device: 특정 GPU 디바이스 (None이면 가장 여유 있는 GPU)
+            buffer_gb: 안전 버퍼 (GB), 기본 1GB
+        
+        Returns:
+            충분하면 True
+        """
+        free_gb = self.get_free_vram_gb(device)
+        return free_gb >= (required_gb + buffer_gb)
+    
+    def get_loaded_models(self) -> Dict[str, str]:
+        """현재 로드된 모델 목록 반환 (model_name -> device)"""
+        return self._model_assignments.copy()
+    
+    def is_model_loaded(self, model_name: str) -> bool:
+        """특정 모델이 로드되어 있는지 확인"""
+        return model_name in self._model_assignments
 
 
 # 전역 인스턴스
