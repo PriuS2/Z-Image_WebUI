@@ -557,6 +557,19 @@ def custom_openapi():
         }
     }
     
+    # API 키 인증이 필요한 엔드포인트에 security 설정 추가
+    api_key_endpoints = [
+        "/api/instant-generate",
+        "/api/generate",
+        "/api/edit/generate",
+    ]
+    
+    for path_key, path_item in openapi_schema.get("paths", {}).items():
+        if path_key in api_key_endpoints:
+            for method in path_item.values():
+                if isinstance(method, dict):
+                    method["security"] = [{"APIKeyAuth": []}]
+    
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
@@ -1616,6 +1629,138 @@ async def unload_model(request: Request):
             
         except Exception as e:
             raise HTTPException(500, str(e))
+
+
+# ============= Instant Generate API (휘발성 이미지 생성) =============
+class InstantGenerateRequest(BaseModel):
+    """휘발성 이미지 생성 요청"""
+    prompt: str
+    width: int = 512
+    height: int = 512
+    steps: int = 8
+    guidance_scale: float = 0.0
+    seed: int = -1
+    num_images: int = 1
+    auto_translate: bool = True
+
+
+@app.post("/api/instant-generate", summary="Instant Generate (No Save)", 
+          description="휘발성 이미지 생성 - 파일 저장 없이 메모리에서 바로 반환 (API 키 필수)")
+async def instant_generate_image(
+    request: Request,
+    gen_request: InstantGenerateRequest,
+    api_key: Optional[str] = Depends(get_api_key_auth)
+):
+    """
+    휘발성 이미지 생성 API
+    
+    - 이미지를 파일로 저장하지 않음
+    - 히스토리에 기록하지 않음
+    - base64로 직접 반환 후 메모리에서 삭제
+    - API 키 인증 필수
+    """
+    global pipe
+    update_activity()
+    
+    # API 키 인증 필수
+    api_key_str = api_key or get_api_key_from_request(request)
+    if not api_key_str:
+        raise HTTPException(401, "API 키가 필요합니다. Authorization: Bearer <api_key> 헤더를 사용하세요.")
+    
+    is_valid, api_key_obj = api_key_manager.validate_api_key(api_key_str)
+    if not is_valid:
+        raise HTTPException(401, "유효하지 않은 API 키입니다.")
+    
+    # 모델 체크
+    if pipe is None:
+        success, message = await ensure_generation_model_loaded()
+        if not success:
+            raise HTTPException(400, f"모델 자동 로드 실패: {message}")
+    
+    if not gen_request.prompt.strip():
+        raise HTTPException(400, "프롬프트를 입력해주세요.")
+    
+    try:
+        # 프롬프트 번역
+        final_prompt = gen_request.prompt
+        if gen_request.auto_translate and translator.is_korean(gen_request.prompt):
+            final_prompt, success = translator.translate(gen_request.prompt)
+        
+        # 시드 설정
+        seed = gen_request.seed
+        if seed == -1:
+            seed = random.randint(0, 2147483647)
+        
+        # GPU 메모리 정리
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        gc.collect()
+        
+        # 이미지 생성
+        images_response = []
+        current_seed = seed
+        
+        for i in range(gen_request.num_images):
+            generator = torch.Generator(device=device).manual_seed(current_seed)
+            
+            result = pipe(
+                prompt=final_prompt,
+                width=gen_request.width,
+                height=gen_request.height,
+                num_inference_steps=gen_request.steps,
+                guidance_scale=gen_request.guidance_scale,
+                generator=generator,
+            )
+            
+            result_image = result.images[0]
+            
+            # base64로 변환 (파일 저장 없음)
+            buffered = BytesIO()
+            result_image.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            buffered.close()
+            
+            images_response.append({
+                "base64": img_base64,
+                "seed": current_seed,
+                "width": result_image.width,
+                "height": result_image.height,
+            })
+            
+            # 다음 이미지를 위한 시드 증가
+            current_seed += 1
+            
+            # 메모리 정리
+            del result_image
+            del result
+        
+        # GPU 메모리 정리
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        
+        return {
+            "success": True,
+            "images": images_response,
+            "prompt": final_prompt,
+            "original_prompt": gen_request.prompt,
+            "settings": {
+                "width": gen_request.width,
+                "height": gen_request.height,
+                "steps": gen_request.steps,
+                "guidance_scale": gen_request.guidance_scale,
+                "seed": seed,
+                "num_images": gen_request.num_images,
+            }
+        }
+        
+    except Exception as e:
+        # GPU 메모리 정리
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        raise HTTPException(500, f"이미지 생성 실패: {str(e)}")
 
 
 @app.post("/api/generate", summary="Generate Image", description="이미지 생성 요청 (큐에 추가 또는 직접 실행)")
