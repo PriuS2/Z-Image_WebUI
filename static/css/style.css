@@ -2851,3 +2851,155 @@ body {
     margin-bottom: 16px;
     display: none;
 }
+
+/* API 키 관리 스타일 */
+.api-key-form {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.api-key-form input {
+    flex: 1;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.api-key-form input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.api-key-created {
+    margin: 16px 0;
+    padding: 16px;
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: var(--radius-sm);
+}
+
+.api-key-alert {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--warning);
+    font-size: 13px;
+    margin-bottom: 12px;
+}
+
+.api-key-alert i {
+    font-size: 16px;
+}
+
+.api-key-display {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg-secondary);
+    padding: 12px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+
+.api-key-display code {
+    flex: 1;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 14px;
+    color: var(--success);
+    word-break: break-all;
+}
+
+.api-key-list {
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    margin-bottom: 16px;
+}
+
+.api-key-list-header {
+    display: grid;
+    grid-template-columns: 1.5fr 1.2fr 1fr 1fr 80px 120px;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.api-key-list-item {
+    display: grid;
+    grid-template-columns: 1.5fr 1.2fr 1fr 1fr 80px 120px;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    align-items: center;
+}
+
+.api-key-list-item:last-child {
+    border-bottom: none;
+}
+
+.api-key-list-item:hover {
+    background: var(--bg-hover);
+}
+
+.api-key-name {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.api-key-prefix {
+    font-family: 'Consolas', 'Monaco', monospace;
+    color: var(--accent);
+    font-size: 12px;
+}
+
+.api-key-date {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.api-key-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.api-key-status.active {
+    background: rgba(34, 197, 94, 0.1);
+    color: var(--success);
+}
+
+.api-key-status.inactive {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--danger);
+}
+
+.api-key-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.api-key-actions .btn {
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
+.api-key-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+}

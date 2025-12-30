@@ -19,11 +19,12 @@ from contextlib import asynccontextmanager
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Response, Cookie
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Response, Cookie, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.requests import Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import uvicorn
 
@@ -53,6 +54,7 @@ from utils.favorites import get_favorites_manager_sync, FavoritesManager, clear_
 from utils.session import session_manager, is_localhost, SessionManager, SessionInfo
 from utils.queue_manager import generation_queue, GenerationQueueManager
 from utils.auth import auth_manager, User
+from utils.api_keys import api_key_manager, APIKey
 from utils.longcat_edit import longcat_edit_manager
 from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager, clear_edit_history_manager_cache
 from utils.edit_llm import edit_translator, edit_enhancer, edit_suggester
@@ -103,7 +105,7 @@ async def unload_generation_model_internal():
     if pipe is None:
         return
     
-    print("🔄 생성 모델 자동 언로드 중...")
+    print("[*] Auto-unloading generation model...")
     
     # GPU 모니터에서 모델 등록 해제
     gpu_monitor.unregister_model("Z-Image-Turbo")
@@ -128,7 +130,7 @@ async def unload_generation_model_internal():
         "content": f"🔄 VRAM 확보를 위해 생성 모델({old_model})이 자동 언로드되었습니다."
     })
     
-    print(f"✅ 생성 모델 자동 언로드 완료. VRAM: {get_vram_info()}")
+    print(f"[OK] Generation model auto-unloaded. VRAM: {get_vram_info()}")
 
 
 async def unload_edit_model_internal():
@@ -136,7 +138,7 @@ async def unload_edit_model_internal():
     if not longcat_edit_manager.is_loaded:
         return
     
-    print("🔄 편집 모델 자동 언로드 중...")
+    print("[*] Auto-unloading edit model...")
     
     old_model = longcat_edit_manager.current_model
     
@@ -155,7 +157,7 @@ async def unload_edit_model_internal():
             "content": f"🔄 VRAM 확보를 위해 편집 모델({old_model})이 자동 언로드되었습니다."
         })
         
-        print(f"✅ 편집 모델 자동 언로드 완료. VRAM: {get_vram_info()}")
+        print(f"[OK] Edit model auto-unloaded. VRAM: {get_vram_info()}")
 
 
 async def ensure_generation_model_loaded(session_id: str = None) -> tuple[bool, str]:
@@ -484,10 +486,10 @@ async def auto_unload_checker():
                     "stage": "complete"
                 })
                 
-                print(f"✅ 자동 언로드 완료. VRAM: {get_vram_info()}")
+                print(f"[OK] Auto-unload complete. VRAM: {get_vram_info()}")
                 
             except Exception as e:
-                print(f"❌ 자동 언로드 실패: {e}")
+                print(f"[ERR] Auto-unload failed: {e}")
 
 
 @asynccontextmanager
@@ -497,11 +499,11 @@ async def lifespan(app: FastAPI):
     
     # 시작 시: 자동 언로드 체크 태스크 시작
     auto_unload_task = asyncio.create_task(auto_unload_checker())
-    print("🔄 자동 언로드 체커 시작됨")
+    print("[*] Auto unload checker started")
     
     # 큐 워커 시작
     await generation_queue.start_worker()
-    print("🔄 이미지 생성 큐 워커 시작됨")
+    print("[*] Image generation queue worker started")
     
     # 큐 콜백 설정
     generation_queue.set_callbacks(
@@ -525,7 +527,41 @@ async def lifespan(app: FastAPI):
 
 
 # ============= FastAPI 앱 설정 =============
-app = FastAPI(title="Z-Image WebUI", version="2.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="Z-Image WebUI", 
+    version="2.0.0", 
+    lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True}  # 인증 정보 유지
+)
+
+
+# OpenAPI 스키마에 API 키 인증 추가
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    from fastapi.openapi.utils import get_openapi
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        routes=app.routes,
+    )
+    
+    # securitySchemes 추가
+    openapi_schema["components"]["securitySchemes"] = {
+        "APIKeyAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "API Key",
+            "description": "API 키를 입력하세요 (zimg_로 시작하는 키). 설정 > API 키 관리에서 발급받을 수 있습니다."
+        }
+    }
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 # 정적 파일 및 템플릿
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
@@ -711,6 +747,61 @@ def require_auth(session: Optional[SessionInfo]) -> None:
     """인증 필수 체크 - 로그인하지 않으면 예외 발생"""
     if not session or not session.is_authenticated:
         raise HTTPException(401, "로그인이 필요합니다.")
+
+
+# API 키 인증을 위한 보안 스키마 (Swagger docs에서 사용)
+api_key_scheme = HTTPBearer(
+    scheme_name="API Key",
+    description="API 키를 입력하세요 (zimg_로 시작하는 키)",
+    auto_error=False  # 인증 실패 시 자동 에러 발생 안 함 (세션 인증 폴백 허용)
+)
+
+
+async def get_api_key_auth(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(api_key_scheme)
+) -> Optional[str]:
+    """Swagger docs에서 API 키 인증을 위한 의존성"""
+    if credentials:
+        return credentials.credentials
+    return None
+
+
+def get_api_key_from_request(request: Request) -> Optional[str]:
+    """요청에서 API 키 추출 (Authorization: Bearer <api_key>)"""
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    return None
+
+
+async def get_auth_from_request(request: Request) -> Dict[str, Any]:
+    """
+    요청에서 인증 정보 가져오기 (API 키 또는 세션)
+    
+    Returns:
+        {"type": "api_key", "api_key": APIKey} 또는
+        {"type": "session", "session": SessionInfo} 또는
+        예외 발생
+    """
+    # 1. Authorization 헤더에서 API 키 확인
+    api_key_str = get_api_key_from_request(request)
+    if api_key_str:
+        is_valid, api_key_obj = api_key_manager.validate_api_key(api_key_str)
+        if is_valid and api_key_obj:
+            return {"type": "api_key", "api_key": api_key_obj}
+        raise HTTPException(401, "유효하지 않은 API 키입니다.")
+    
+    # 2. 기존 세션 인증으로 폴백
+    session = await get_session_from_request(request)
+    if session and session.is_authenticated:
+        return {"type": "session", "session": session}
+    
+    raise HTTPException(401, "인증이 필요합니다. 로그인하거나 API 키를 사용하세요.")
+
+
+async def require_auth_or_api_key(request: Request) -> Dict[str, Any]:
+    """인증 필수 체크 - 세션 또는 API 키 중 하나가 있어야 함"""
+    return await get_auth_from_request(request)
 
 
 def require_admin(request: Request) -> None:
@@ -1527,11 +1618,56 @@ async def unload_model(request: Request):
             raise HTTPException(500, str(e))
 
 
-@app.post("/api/generate")
-async def generate_image(request: Request, gen_request: GenerateRequest):
-    """이미지 생성 요청 (큐에 추가)"""
+@app.post("/api/generate", summary="Generate Image", description="이미지 생성 요청 (큐에 추가 또는 직접 실행)")
+async def generate_image(
+    request: Request, 
+    gen_request: GenerateRequest,
+    api_key: Optional[str] = Depends(get_api_key_auth)
+):
+    """이미지 생성 요청 (큐에 추가 또는 직접 실행)"""
     update_activity()
     
+    # API 키 또는 세션 인증 확인 (Swagger docs의 Authorize 버튼 또는 헤더에서)
+    api_key_str = api_key or get_api_key_from_request(request)
+    
+    if api_key_str:
+        # API 키 인증
+        is_valid, api_key_obj = api_key_manager.validate_api_key(api_key_str)
+        if not is_valid:
+            raise HTTPException(401, "유효하지 않은 API 키입니다.")
+        
+        # API 키로 호출 시: 직접 실행 모드 (동기적으로 결과 반환)
+        if pipe is None:
+            success, message = await ensure_generation_model_loaded()
+            if not success:
+                raise HTTPException(400, f"모델 자동 로드 실패: {message}")
+        
+        if not gen_request.prompt.strip():
+            raise HTTPException(400, "프롬프트를 입력해주세요.")
+        
+        # API 키 사용 시 별도 data_id 사용
+        api_data_id = f"api_key_{api_key_obj.id}"
+        
+        # 직접 이미지 생성 실행 (큐 없이)
+        try:
+            request_data = {
+                "session_id": api_data_id,
+                "prompt": gen_request.prompt,
+                "korean_prompt": gen_request.korean_prompt,
+                "width": gen_request.width,
+                "height": gen_request.height,
+                "steps": gen_request.steps,
+                "guidance_scale": gen_request.guidance_scale,
+                "seed": gen_request.seed,
+                "num_images": gen_request.num_images,
+                "auto_translate": gen_request.auto_translate,
+            }
+            result = await execute_generation(request_data)
+            return result
+        except Exception as e:
+            raise HTTPException(500, f"이미지 생성 실패: {str(e)}")
+    
+    # 기존 세션 인증 방식
     session = await get_session_from_request(request)
     require_auth(session)
     
@@ -2455,6 +2591,81 @@ async def get_available_devices(request: Request):
     }
 
 
+# ============= API 키 관리 API (관리자 전용) =============
+class CreateAPIKeyRequest(BaseModel):
+    """API 키 생성 요청"""
+    name: str
+
+
+class UpdateAPIKeyRequest(BaseModel):
+    """API 키 수정 요청"""
+    name: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@app.get("/api/admin/api-keys")
+async def list_api_keys(request: Request):
+    """API 키 목록 조회 (관리자 전용)"""
+    require_admin(request)
+    
+    keys = api_key_manager.list_api_keys()
+    return {"api_keys": keys}
+
+
+@app.post("/api/admin/api-keys")
+async def create_api_key(request: Request, data: CreateAPIKeyRequest):
+    """새 API 키 생성 (관리자 전용)"""
+    require_admin(request)
+    
+    success, message, full_key, api_key_obj = api_key_manager.create_api_key(data.name)
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    return {
+        "success": True,
+        "message": message,
+        "api_key": full_key,  # 전체 키는 생성 시에만 반환
+        "key_info": api_key_obj.to_dict() if api_key_obj else None
+    }
+
+
+@app.patch("/api/admin/api-keys/{key_id}")
+async def update_api_key(request: Request, key_id: int, data: UpdateAPIKeyRequest):
+    """API 키 수정 (관리자 전용)"""
+    require_admin(request)
+    
+    success, message = api_key_manager.update_api_key(
+        key_id, 
+        name=data.name, 
+        is_active=data.is_active
+    )
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    return {
+        "success": True,
+        "message": message
+    }
+
+
+@app.delete("/api/admin/api-keys/{key_id}")
+async def delete_api_key(request: Request, key_id: int):
+    """API 키 삭제 (관리자 전용)"""
+    require_admin(request)
+    
+    success, message = api_key_manager.delete_api_key(key_id)
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    return {
+        "success": True,
+        "message": message
+    }
+
+
 # ============= WebSocket =============
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str] = Cookie(default=None)):
@@ -2702,7 +2913,7 @@ async def unload_edit_model(request: Request):
             raise HTTPException(500, str(e))
 
 
-@app.post("/api/edit/generate")
+@app.post("/api/edit/generate", summary="Edit Image", description="이미지 편집 실행")
 async def edit_image(
     request: Request,
     image: UploadFile = File(...),
@@ -2713,17 +2924,35 @@ async def edit_image(
     seed: int = Form(-1),
     num_images: int = Form(1),
     auto_translate: str = Form("true"),
-    reference_image: Optional[UploadFile] = File(None)
+    reference_image: Optional[UploadFile] = File(None),
+    api_key: Optional[str] = Depends(get_api_key_auth)
 ):
     """이미지 편집 실행"""
     update_edit_activity()
     
-    session = await get_session_from_request(request)
-    require_auth(session)
+    # API 키 또는 세션 인증 확인 (Swagger docs의 Authorize 버튼 또는 헤더에서)
+    api_key_str = api_key or get_api_key_from_request(request)
+    api_key_obj = None
+    session = None
+    data_id = None
+    use_websocket = True
+    
+    if api_key_str:
+        # API 키 인증
+        is_valid, api_key_obj = api_key_manager.validate_api_key(api_key_str)
+        if not is_valid:
+            raise HTTPException(401, "유효하지 않은 API 키입니다.")
+        data_id = f"api_key_{api_key_obj.id}"
+        use_websocket = False  # API 키 사용 시 웹소켓 알림 비활성화
+    else:
+        # 기존 세션 인증
+        session = await get_session_from_request(request)
+        require_auth(session)
+        data_id = session.data_id
     
     # 편집 모델이 로드되지 않았으면 자동 로드
     if not longcat_edit_manager.is_loaded:
-        success, message = await ensure_edit_model_loaded(session.data_id)
+        success, message = await ensure_edit_model_loaded(data_id if use_websocket else None)
         if not success:
             raise HTTPException(400, f"편집 모델 자동 로드 실패: {message}")
     
@@ -2737,8 +2966,11 @@ async def edit_image(
         # 이번 편집 요청의 고유 ID (입력/참조 이미지 파일명 등에 사용)
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
         
-        # 세션별 출력 디렉토리 (입력/참조/결과 모두 여기 저장)
-        outputs_dir = session.get_outputs_dir()
+        # 출력 디렉토리 (세션 또는 API 키별)
+        if session:
+            outputs_dir = session.get_outputs_dir()
+        else:
+            outputs_dir = OUTPUTS_DIR / data_id
         outputs_dir.mkdir(parents=True, exist_ok=True)
         
         # 이미지 로드
@@ -2749,7 +2981,7 @@ async def edit_image(
         original_filename = f"edit_input_{run_id}.png"
         original_output_path = outputs_dir / original_filename
         pil_image.save(original_output_path, format="PNG")
-        original_image_url = f"/outputs/{session.data_id}/{original_filename}"
+        original_image_url = f"/outputs/{data_id}/{original_filename}"
         
         # 참조 이미지 로드 (있으면)
         ref_image = None
@@ -2762,36 +2994,40 @@ async def edit_image(
             reference_filename = f"edit_reference_{run_id}.png"
             reference_output_path = outputs_dir / reference_filename
             ref_image.save(reference_output_path, format="PNG")
-            reference_image_url = f"/outputs/{session.data_id}/{reference_filename}"
+            reference_image_url = f"/outputs/{data_id}/{reference_filename}"
         
         # 프롬프트 번역
         final_prompt = prompt
         if auto_translate_bool and edit_translator.is_korean(prompt):
-            await ws_manager.send_to_session(session.data_id, {
-                "type": "edit_system",
-                "content": "🌐 편집 지시어 번역 중..."
-            })
+            if use_websocket:
+                await ws_manager.send_to_session(data_id, {
+                    "type": "edit_system",
+                    "content": "🌐 편집 지시어 번역 중..."
+                })
             final_prompt, success = edit_translator.translate(prompt)
-            if not success:
-                await ws_manager.send_to_session(session.data_id, {
+            if not success and use_websocket:
+                await ws_manager.send_to_session(data_id, {
                     "type": "edit_system",
                     "content": "⚠️ 번역 실패, 원문 사용"
                 })
         
         # 편집 시작 메시지
-        await ws_manager.send_to_session(session.data_id, {
-            "type": "edit_system",
-            "content": "🎨 이미지 편집 중..."
-        })
+        if use_websocket:
+            await ws_manager.send_to_session(data_id, {
+                "type": "edit_system",
+                "content": "🎨 이미지 편집 중..."
+            })
         
         # 진행 상황 콜백 정의
         async def edit_progress_callback(current_image: int, total_images: int, current_step: int, total_steps: int):
+            if not use_websocket:
+                return
             # 전체 진행률 계산 (이미지 + 스텝 기준)
             image_progress = (current_image - 1) / total_images
             step_progress = current_step / total_steps / total_images
             overall_progress = int((image_progress + step_progress) * 100)
             
-            await ws_manager.send_to_session(session.data_id, {
+            await ws_manager.send_to_session(data_id, {
                 "type": "edit_progress",
                 "current_image": current_image,
                 "total_images": total_images,
@@ -2802,7 +3038,9 @@ async def edit_image(
         
         # 상태 메시지 콜백 정의 (참조 이미지 분석 등)
         async def edit_status_callback(message: str):
-            await ws_manager.send_to_session(session.data_id, {
+            if not use_websocket:
+                return
+            await ws_manager.send_to_session(data_id, {
                 "type": "edit_system",
                 "content": message
             })
@@ -2857,11 +3095,11 @@ async def edit_image(
                 "base64": image_to_base64(result_image),
                 "filename": filename,
                 "seed": seed,
-                "path": f"/outputs/{session.data_id}/{filename}"
+                "path": f"/outputs/{data_id}/{filename}"
             })
         
         # 히스토리 저장
-        edit_history_mgr = get_edit_history_manager_sync(session.data_id)
+        edit_history_mgr = get_edit_history_manager_sync(data_id)
         history_entry = edit_history_mgr.add(
             prompt=final_prompt,
             korean_prompt=korean_prompt,
@@ -2876,19 +3114,20 @@ async def edit_image(
         )
         
         # 완료 메시지
-        await ws_manager.send_to_session(session.data_id, {
-            "type": "edit_system",
-            "content": f"✅ 편집 완료! (시드: {results[0]['seed'] if results else 'N/A'})"
-        })
-        
-        # 결과 전송
-        await ws_manager.send_to_session(session.data_id, {
-            "type": "edit_result",
-            "images": images_response,
-            "seed": results[0]["seed"] if results else -1,
-            "prompt": final_prompt,
-            "history_id": history_entry.id
-        })
+        if use_websocket:
+            await ws_manager.send_to_session(data_id, {
+                "type": "edit_system",
+                "content": f"✅ 편집 완료! (시드: {results[0]['seed'] if results else 'N/A'})"
+            })
+            
+            # 결과 전송
+            await ws_manager.send_to_session(data_id, {
+                "type": "edit_result",
+                "images": images_response,
+                "seed": results[0]["seed"] if results else -1,
+                "prompt": final_prompt,
+                "history_id": history_entry.id
+            })
         
         return {
             "success": True,
@@ -2899,10 +3138,11 @@ async def edit_image(
         }
         
     except Exception as e:
-        await ws_manager.send_to_session(session.data_id, {
-            "type": "error",
-            "content": f"❌ 편집 오류: {str(e)}"
-        })
+        if use_websocket:
+            await ws_manager.send_to_session(data_id, {
+                "type": "error",
+                "content": f"❌ 편집 오류: {str(e)}"
+            })
         raise HTTPException(500, str(e))
 
 
@@ -3037,9 +3277,9 @@ if __name__ == "__main__":
     # 출력 폴더 생성
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     
-    print("🎨 Z-Image WebUI 시작...")
-    print(f"📍 http://localhost:{SERVER_PORT}")
-    print("🌐 다중 사용자 지원 활성화")
+    print("[*] Z-Image WebUI starting...")
+    print(f"[*] http://localhost:{SERVER_PORT}")
+    print("[*] Multi-user support enabled")
     
     uvicorn.run(
         app,

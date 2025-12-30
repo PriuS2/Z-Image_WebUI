@@ -937,6 +937,13 @@ function updateAdminUI() {
         if (gpuManagementSection) {
             gpuManagementSection.style.display = 'block';
         }
+        
+        // API 키 관리 섹션 표시
+        const apiKeyManagementSection = document.getElementById('apiKeyManagementSection');
+        if (apiKeyManagementSection) {
+            apiKeyManagementSection.style.display = 'block';
+            loadApiKeyList();
+        }
 
         // 양자화/CPU 오프로딩은 관리자만 변경 가능
         [quantizationSelect, cpuOffloadCheck, editQuantizationSelectSettings, editCpuOffloadCheckSettings].forEach(el => {
@@ -975,6 +982,12 @@ function updateAdminUI() {
 
         if (gpuManagementSection) {
             gpuManagementSection.style.display = 'none';
+        }
+        
+        // API 키 관리 섹션 숨김
+        const apiKeyManagementSection = document.getElementById('apiKeyManagementSection');
+        if (apiKeyManagementSection) {
+            apiKeyManagementSection.style.display = 'none';
         }
 
         // 양자화/CPU 오프로딩은 관리자만 변경 가능
@@ -3207,6 +3220,32 @@ document.addEventListener('DOMContentLoaded', () => {
         btnRefreshUsers.addEventListener('click', loadUserList);
     }
     
+    // 관리자: API 키 관리 이벤트
+    const btnCreateApiKey = document.getElementById('btnCreateApiKey');
+    if (btnCreateApiKey) {
+        btnCreateApiKey.addEventListener('click', createApiKey);
+    }
+    
+    const btnRefreshApiKeys = document.getElementById('btnRefreshApiKeys');
+    if (btnRefreshApiKeys) {
+        btnRefreshApiKeys.addEventListener('click', loadApiKeyList);
+    }
+    
+    const btnCopyApiKey = document.getElementById('btnCopyApiKey');
+    if (btnCopyApiKey) {
+        btnCopyApiKey.addEventListener('click', copyApiKeyToClipboard);
+    }
+    
+    // API 키 이름 입력 필드 엔터 키 처리
+    const apiKeyNameInput = document.getElementById('apiKeyNameInput');
+    if (apiKeyNameInput) {
+        apiKeyNameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                createApiKey();
+            }
+        });
+    }
+    
     // 이미지 미리보기 모달 이벤트 설정
     initImagePreviewDrag();
     initImagePreviewTouch();
@@ -4322,6 +4361,13 @@ async function loadCurrentUser() {
                 sessionManagementSection.style.display = 'block';
                 loadSessionList();  // 세션 목록 로드
             }
+            
+            // API 키 관리 섹션 표시
+            const apiKeyManagementSection = document.getElementById('apiKeyManagementSection');
+            if (apiKeyManagementSection) {
+                apiKeyManagementSection.style.display = 'block';
+                loadApiKeyList();  // API 키 목록 로드
+            }
         }
         
         return data;
@@ -4500,4 +4546,165 @@ function formatDate(dateString) {
     if (!dateString) return '';
     const date = new Date(dateString);
     return date.toLocaleString('ko-KR');
+}
+
+// ============= API 키 관리 (관리자 전용) =============
+
+/**
+ * API 키 목록 로드
+ */
+async function loadApiKeyList() {
+    try {
+        const data = await apiCall('/admin/api-keys', 'GET');
+        renderApiKeyList(data.api_keys || []);
+    } catch (error) {
+        console.error('API 키 목록 로드 실패:', error);
+    }
+}
+
+/**
+ * API 키 목록 렌더링
+ */
+function renderApiKeyList(apiKeys) {
+    const container = document.getElementById('apiKeyList');
+    if (!container) return;
+    
+    // 헤더 유지하고 나머지 삭제
+    const header = container.querySelector('.api-key-list-header');
+    container.innerHTML = '';
+    if (header) container.appendChild(header);
+    
+    if (apiKeys.length === 0) {
+        const emptyDiv = document.createElement('div');
+        emptyDiv.className = 'api-key-empty';
+        emptyDiv.textContent = '등록된 API 키가 없습니다.';
+        container.appendChild(emptyDiv);
+        return;
+    }
+    
+    apiKeys.forEach(key => {
+        const item = document.createElement('div');
+        item.className = 'api-key-list-item';
+        item.dataset.keyId = key.id;
+        
+        item.innerHTML = `
+            <span class="api-key-name">${escapeHtml(key.name)}</span>
+            <span class="api-key-prefix">${escapeHtml(key.key_prefix)}</span>
+            <span class="api-key-date">${formatDate(key.created_at)}</span>
+            <span class="api-key-date">${key.last_used ? formatDate(key.last_used) : '사용 안 함'}</span>
+            <span class="api-key-status ${key.is_active ? 'active' : 'inactive'}">
+                ${key.is_active ? '활성' : '비활성'}
+            </span>
+            <div class="api-key-actions">
+                <button class="btn btn-sm ${key.is_active ? 'btn-warning' : 'btn-success'}" 
+                        onclick="toggleApiKey(${key.id}, ${!key.is_active})" 
+                        title="${key.is_active ? '비활성화' : '활성화'}">
+                    <i class="ri-${key.is_active ? 'pause' : 'play'}-line"></i>
+                </button>
+                <button class="btn btn-sm btn-danger" onclick="deleteApiKey(${key.id}, '${escapeHtml(key.name)}')" title="삭제">
+                    <i class="ri-delete-bin-line"></i>
+                </button>
+            </div>
+        `;
+        
+        container.appendChild(item);
+    });
+}
+
+/**
+ * API 키 생성
+ */
+async function createApiKey() {
+    const nameInput = document.getElementById('apiKeyNameInput');
+    const name = nameInput?.value?.trim();
+    
+    if (!name) {
+        addMessage('system', '⚠️ API 키 이름을 입력해주세요.', 'warning');
+        return;
+    }
+    
+    try {
+        const result = await apiCall('/admin/api-keys', 'POST', { name });
+        
+        if (result.success && result.api_key) {
+            // 생성된 키 표시
+            const alertDiv = document.getElementById('apiKeyCreatedAlert');
+            const keyValue = document.getElementById('createdApiKeyValue');
+            
+            if (alertDiv && keyValue) {
+                keyValue.textContent = result.api_key;
+                alertDiv.style.display = 'block';
+            }
+            
+            // 입력 필드 초기화
+            nameInput.value = '';
+            
+            // 목록 새로고침
+            loadApiKeyList();
+            
+            addMessage('system', `✅ API 키가 생성되었습니다: ${result.key_info?.key_prefix || ''}`);
+        }
+    } catch (error) {
+        addMessage('system', `❌ API 키 생성 실패: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * API 키 활성화/비활성화 토글
+ */
+async function toggleApiKey(keyId, activate) {
+    try {
+        await apiCall(`/admin/api-keys/${keyId}`, 'PATCH', { is_active: activate });
+        loadApiKeyList();
+        addMessage('system', `✅ API 키가 ${activate ? '활성화' : '비활성화'}되었습니다.`);
+    } catch (error) {
+        addMessage('system', `❌ API 키 상태 변경 실패: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * API 키 삭제
+ */
+async function deleteApiKey(keyId, keyName) {
+    if (!confirm(`'${keyName}' API 키를 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) {
+        return;
+    }
+    
+    try {
+        await apiCall(`/admin/api-keys/${keyId}`, 'DELETE');
+        loadApiKeyList();
+        addMessage('system', `✅ '${keyName}' API 키가 삭제되었습니다.`);
+    } catch (error) {
+        addMessage('system', `❌ API 키 삭제 실패: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * API 키 클립보드에 복사
+ */
+function copyApiKeyToClipboard() {
+    const keyValue = document.getElementById('createdApiKeyValue');
+    if (!keyValue) return;
+    
+    const apiKey = keyValue.textContent;
+    navigator.clipboard.writeText(apiKey).then(() => {
+        addMessage('system', '✅ API 키가 클립보드에 복사되었습니다.');
+    }).catch(err => {
+        console.error('클립보드 복사 실패:', err);
+        // 폴백: 선택하기
+        const range = document.createRange();
+        range.selectNode(keyValue);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        addMessage('system', '📋 API 키를 선택했습니다. Ctrl+C로 복사하세요.');
+    });
+}
+
+/**
+ * HTML 이스케이프 함수
+ */
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }

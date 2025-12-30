@@ -735,6 +735,53 @@
                     </button>
                 </div>
                 
+                <!-- API 키 관리 (관리자 전용) -->
+                <div class="settings-section" id="apiKeyManagementSection" style="display: none;">
+                    <h3>🔑 API 키 관리 (관리자 전용)</h3>
+                    <p class="setting-description">외부 클라이언트가 로그인 없이 API에 접근할 수 있는 키를 관리합니다.</p>
+                    
+                    <!-- API 키 생성 폼 -->
+                    <div class="setting-group api-key-create">
+                        <label>새 API 키 생성</label>
+                        <div class="api-key-form">
+                            <input type="text" id="apiKeyNameInput" placeholder="API 키 이름 (예: 프로덕션 서버)" maxlength="100">
+                            <button class="btn btn-primary" id="btnCreateApiKey">
+                                <i class="ri-add-line"></i> 생성
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 생성된 키 표시 (한 번만 보여줌) -->
+                    <div class="api-key-created" id="apiKeyCreatedAlert" style="display: none;">
+                        <div class="api-key-alert">
+                            <i class="ri-alert-line"></i>
+                            <span>아래 API 키를 복사해 두세요. 이 키는 다시 확인할 수 없습니다!</span>
+                        </div>
+                        <div class="api-key-display">
+                            <code id="createdApiKeyValue"></code>
+                            <button class="btn btn-sm btn-secondary" id="btnCopyApiKey" title="클립보드에 복사">
+                                <i class="ri-clipboard-line"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- API 키 목록 -->
+                    <div class="api-key-list" id="apiKeyList">
+                        <div class="api-key-list-header">
+                            <span>이름</span>
+                            <span>키 (prefix)</span>
+                            <span>생성일</span>
+                            <span>마지막 사용</span>
+                            <span>상태</span>
+                            <span>작업</span>
+                        </div>
+                        <!-- 동적으로 API 키 목록이 추가됨 -->
+                    </div>
+                    <button class="btn btn-secondary" id="btnRefreshApiKeys">
+                        <i class="ri-refresh-line"></i> 새로고침
+                    </button>
+                </div>
+                
                 <div class="settings-section credits-section">
                     <h3>🙏 크레딧</h3>
                     <div class="credits-content">
