@@ -910,6 +910,39 @@ body {
     border-color: var(--accent);
 }
 
+/* Negative Prompt 스타일 */
+.negative-prompt-row {
+    margin-bottom: 12px;
+}
+
+.negative-prompt-row .input-label {
+    color: var(--text-muted);
+}
+
+.negative-prompt-row .input-label i {
+    color: var(--error);
+}
+
+.negative-prompt-row textarea {
+    background: rgba(239, 68, 68, 0.05);
+    border-color: rgba(239, 68, 68, 0.2);
+}
+
+.negative-prompt-row textarea:focus {
+    border-color: var(--error);
+}
+
+/* 편집 히스토리 Negative Prompt 표시 */
+.edit-history-item-prompt.negative {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.edit-history-item-prompt.negative .lang-badge.neg {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--error);
+}
+
 .input-actions {
     display: flex;
     justify-content: space-between;
@@ -2076,15 +2109,61 @@ body {
 
 /* ============= 이미지 편집 탭 스타일 ============= */
 
-/* 편집 이미지 업로드 영역 */
+/* 편집 이미지 업로드 영역 (멀티 이미지 - Qwen) */
 .edit-image-area {
     display: flex;
-    gap: 16px;
+    gap: 12px;
     margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: flex-end;
 }
 
-.image-upload-box,
-.reference-image-box {
+.edit-image-area.multi-image-upload {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    grid-template-rows: auto auto;
+}
+
+/* 이미지 슬롯 (1~3장) */
+.image-slot {
+    min-height: 120px;
+    max-height: 150px;
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+    background: var(--bg-secondary);
+}
+
+.image-slot[data-slot="0"] {
+    border-color: var(--accent);
+    border-style: solid;
+}
+
+.image-slot:hover {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.05);
+}
+
+.image-slot.dragover {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.1);
+}
+
+.btn-gallery-select {
+    grid-column: 1 / -1;
+    justify-self: center;
+    margin-top: 4px;
+}
+
+/* 기존 단일 이미지 박스 (하위 호환) */
+.image-upload-box {
     flex: 1;
     min-height: 150px;
     max-height: 200px;
@@ -2099,30 +2178,14 @@ body {
     overflow: hidden;
 }
 
-.image-upload-box:hover,
-.reference-image-box:hover {
+.image-upload-box:hover {
     border-color: var(--accent);
     background: rgba(99, 102, 241, 0.05);
 }
 
-.image-upload-box.dragover,
-.reference-image-box.dragover {
+.image-upload-box.dragover {
     border-color: var(--accent);
     background: rgba(99, 102, 241, 0.1);
-}
-
-.image-upload-box {
-    flex: 2;
-}
-
-.reference-image-box {
-    flex: 1;
-    border-style: dotted;
-    opacity: 0.7;
-}
-
-.reference-image-box:hover {
-    opacity: 1;
 }
 
 .upload-placeholder {
@@ -2385,11 +2448,14 @@ body {
         flex-direction: column;
     }
     
-    .image-upload-box,
-    .reference-image-box {
-        max-height: 150px;
+    .edit-image-area.multi-image-upload {
+        grid-template-columns: repeat(2, 1fr);
     }
-    
+
+    .image-slot {
+        max-height: 120px;
+    }
+
     .edit-history-images {
         flex-direction: column;
         align-items: center;
@@ -2850,4 +2916,156 @@ body {
     font-size: 13px;
     margin-bottom: 16px;
     display: none;
+}
+
+/* API 키 관리 스타일 */
+.api-key-form {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.api-key-form input {
+    flex: 1;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.api-key-form input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.api-key-created {
+    margin: 16px 0;
+    padding: 16px;
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: var(--radius-sm);
+}
+
+.api-key-alert {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--warning);
+    font-size: 13px;
+    margin-bottom: 12px;
+}
+
+.api-key-alert i {
+    font-size: 16px;
+}
+
+.api-key-display {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg-secondary);
+    padding: 12px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+
+.api-key-display code {
+    flex: 1;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 14px;
+    color: var(--success);
+    word-break: break-all;
+}
+
+.api-key-list {
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    margin-bottom: 16px;
+}
+
+.api-key-list-header {
+    display: grid;
+    grid-template-columns: 1.5fr 1.2fr 1fr 1fr 80px 120px;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.api-key-list-item {
+    display: grid;
+    grid-template-columns: 1.5fr 1.2fr 1fr 1fr 80px 120px;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    align-items: center;
+}
+
+.api-key-list-item:last-child {
+    border-bottom: none;
+}
+
+.api-key-list-item:hover {
+    background: var(--bg-hover);
+}
+
+.api-key-name {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.api-key-prefix {
+    font-family: 'Consolas', 'Monaco', monospace;
+    color: var(--accent);
+    font-size: 12px;
+}
+
+.api-key-date {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.api-key-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.api-key-status.active {
+    background: rgba(34, 197, 94, 0.1);
+    color: var(--success);
+}
+
+.api-key-status.inactive {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--danger);
+}
+
+.api-key-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.api-key-actions .btn {
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
+.api-key-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
 }

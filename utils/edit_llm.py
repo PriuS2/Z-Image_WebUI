@@ -116,6 +116,60 @@ Do not add any explanation, just output the translated instruction in Korean."""
         except Exception as e:
             print(f"역번역 오류: {e}")
             return text, False
+    
+    def translate_negative(self, text: str) -> Tuple[str, bool]:
+        """
+        Negative prompt 번역 (한국어 → 영어)
+        Negative prompt는 제외할 요소를 나열하는 형태로, 일반 편집 지시어와 다름
+        
+        Args:
+            text: 번역할 negative prompt
+        
+        Returns:
+            tuple: (번역된 텍스트, 성공 여부)
+        """
+        if not text.strip():
+            return text, True
+        
+        # 이미 영어인 경우 그대로 반환
+        if not self.is_korean(text):
+            return text, True
+        
+        if not llm_client.is_available:
+            return text, False
+        
+        try:
+            result = llm_client.chat_completion(
+                messages=[
+                    {"role": "system", "content": """You are a translator for AI image editing negative prompts.
+Translate Korean negative prompts to English.
+
+Negative prompts describe unwanted elements to avoid in image editing.
+Common patterns include: blurry, distorted, low quality, watermark, etc.
+
+Rules:
+1. Translate each term/phrase accurately
+2. Keep comma-separated format if present
+3. If already in English, return unchanged
+4. Output ONLY the translated negative prompt, no explanation
+
+Examples:
+- "흐릿함, 저화질" → "blurry, low quality"
+- "워터마크, 텍스트 왜곡" → "watermark, distorted text"
+- "노이즈, 픽셀화" → "noise, pixelated"
+"""},
+                    {"role": "user", "content": f"Translate negative prompt:\n{text}"}
+                ],
+                temperature=0.3,
+                max_tokens=300,
+            )
+            
+            if result:
+                return result.strip(), True
+            return text, False
+        except Exception as e:
+            print(f"Negative prompt 번역 오류: {e}")
+            return text, False
 
 
 class EditEnhancer:

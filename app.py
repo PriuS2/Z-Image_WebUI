@@ -19,11 +19,12 @@ from contextlib import asynccontextmanager
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Response, Cookie
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Response, Cookie, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.requests import Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import uvicorn
 
@@ -33,14 +34,15 @@ from PIL import Image
 # 로컬 모듈
 from config.defaults import (
     QUANTIZATION_OPTIONS,
-    EDIT_QUANTIZATION_OPTIONS,
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
     MODELS_DIR,
     SERVER_HOST,
     SERVER_PORT,
     SERVER_RELOAD,
-    LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT,
+    QWEN_EDIT_AUTO_UNLOAD_TIMEOUT,
+    QWEN_EDIT_MODEL_VRAM,
+    DEFAULT_QWEN_EDIT_SETTINGS,
     DEFAULT_GPU_SETTINGS,
 )
 from config.templates import PROMPT_TEMPLATES
@@ -53,7 +55,8 @@ from utils.favorites import get_favorites_manager_sync, FavoritesManager, clear_
 from utils.session import session_manager, is_localhost, SessionManager, SessionInfo
 from utils.queue_manager import generation_queue, GenerationQueueManager
 from utils.auth import auth_manager, User
-from utils.longcat_edit import longcat_edit_manager
+from utils.api_keys import api_key_manager, APIKey
+from utils.qwen_edit import qwen_edit_manager
 from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager, clear_edit_history_manager_cache
 from utils.edit_llm import edit_translator, edit_enhancer, edit_suggester
 from utils.gpu_monitor import gpu_monitor
@@ -67,10 +70,350 @@ last_activity_time = time.time()  # 마지막 활동 시간
 auto_unload_task = None  # 자동 언로드 체크 태스크
 model_lock = asyncio.Lock()  # 모델 로드/언로드 잠금
 
-# LongCat-Image-Edit 관련
+# Qwen-Image-Edit 관련
 edit_last_activity_time = time.time()  # 편집 모델 마지막 활동 시간
 edit_auto_unload_task = None  # 편집 모델 자동 언로드 태스크
 edit_model_lock = asyncio.Lock()  # 편집 모델 로드/언로드 잠금
+
+
+# ============= 모델별 예상 VRAM 사용량 (GB) =============
+# 생성 모델: 양자화에 따라 다름
+GENERATION_MODEL_VRAM = {
+    "BF16 (기본, 최고품질)": 14.0,
+    "GGUF Q8_0 (7.22GB, 고품질)": 7.5,
+    "GGUF Q6_K (5.91GB, 고품질)": 6.0,
+    "GGUF Q5_K_M (5.52GB, 균형)": 5.8,
+    "GGUF Q5_K_S (5.19GB, 균형)": 5.5,
+    "GGUF Q4_K_M (4.98GB, 추천)": 5.2,
+    "GGUF Q4_K_S (4.66GB, 경량)": 4.9,
+    "GGUF Q3_K_M (4.12GB, 저사양)": 4.4,
+    "GGUF Q3_K_S (3.79GB, 최저사양)": 4.1,
+}
+
+
+# ============= 자동 모델 로드/언로드 함수 =============
+async def unload_generation_model_internal():
+    """생성 모델 내부 언로드 (lock 없이)"""
+    global pipe, current_model, device
+    
+    if pipe is None:
+        return
+    
+    print("[*] Auto-unloading generation model...")
+    
+    # GPU 모니터에서 모델 등록 해제
+    gpu_monitor.unregister_model("Z-Image-Turbo")
+    
+    del pipe
+    pipe = None
+    old_model = current_model
+    current_model = None
+    
+    # GPU 캐시 정리
+    gpu_monitor.clear_cache(device)
+    gc.collect()
+    
+    # 클라이언트에게 알림
+    await ws_manager.broadcast({
+        "type": "model_status_change",
+        "model_loaded": False,
+        "current_model": None
+    })
+    await ws_manager.broadcast({
+        "type": "system",
+        "content": f"🔄 VRAM 확보를 위해 생성 모델({old_model})이 자동 언로드되었습니다."
+    })
+    
+    print(f"[OK] Generation model auto-unloaded. VRAM: {get_vram_info()}")
+
+
+async def unload_edit_model_internal():
+    """편집 모델 내부 언로드 (lock 없이)"""
+    if not qwen_edit_manager.is_loaded:
+        return
+    
+    print("[*] Auto-unloading edit model...")
+    
+    old_model = qwen_edit_manager.current_model
+    
+    # 편집 모델 언로드 (내부 lock 사용)
+    success, message = await qwen_edit_manager.unload_model()
+    
+    if success:
+        # 클라이언트에게 알림
+        await ws_manager.broadcast({
+            "type": "edit_model_status_change",
+            "model_loaded": False,
+            "current_model": None
+        })
+        await ws_manager.broadcast({
+            "type": "system",
+            "content": f"🔄 VRAM 확보를 위해 편집 모델({old_model})이 자동 언로드되었습니다."
+        })
+        
+        print(f"[OK] Edit model auto-unloaded. VRAM: {get_vram_info()}")
+
+
+async def ensure_generation_model_loaded(session_id: str = None) -> tuple[bool, str]:
+    """
+    생성 모델이 로드되어 있는지 확인하고, 없으면 자동 로드
+    VRAM이 부족하면 편집 모델을 먼저 언로드
+    
+    Args:
+        session_id: 메시지를 보낼 세션 ID (None이면 broadcast)
+    
+    Returns:
+        (success, message)
+    """
+    global pipe, current_model, device, model_lock
+    
+    # 이미 로드되어 있으면 바로 반환
+    if pipe is not None:
+        return True, "모델이 이미 로드되어 있습니다."
+    
+    # 모델 잠금 확인
+    if model_lock.locked():
+        return False, "다른 사용자가 모델을 로드/언로드 중입니다. 잠시 후 다시 시도해주세요."
+    
+    async with model_lock:
+        # 다시 확인 (lock 대기 중 로드되었을 수 있음)
+        if pipe is not None:
+            return True, "모델이 이미 로드되어 있습니다."
+        
+        # 설정에서 양자화 옵션 가져오기
+        quantization = settings.get("quantization", "BF16 (기본, 최고품질)")
+        cpu_offload = settings.get("cpu_offload", False)
+        target_device_setting = settings.get("generation_gpu", DEFAULT_GPU_SETTINGS["generation_gpu"])
+        
+        # 필요한 VRAM 계산
+        required_vram = GENERATION_MODEL_VRAM.get(quantization, 14.0)
+        
+        # 현재 VRAM 여유 확인
+        resolved_device = get_device(target_device_setting)
+        free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
+        
+        async def send_message(msg: str, msg_type: str = "system"):
+            if session_id:
+                await ws_manager.send_to_session(session_id, {"type": msg_type, "content": msg})
+            else:
+                await ws_manager.broadcast({"type": msg_type, "content": msg})
+        
+        # VRAM이 부족하면 편집 모델 언로드
+        if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
+            if qwen_edit_manager.is_loaded:
+                await send_message(f"⚠️ VRAM 부족 ({free_vram:.1f}GB < {required_vram:.1f}GB). 편집 모델을 언로드합니다...")
+                await unload_edit_model_internal()
+                
+                # 언로드 후 VRAM 재확인
+                await asyncio.sleep(0.5)  # GPU 캐시 정리 대기
+                free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
+        
+        # 여전히 부족하면 경고만 하고 진행 (CPU 오프로딩 가능)
+        if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
+            await send_message(f"⚠️ VRAM이 여전히 부족합니다 ({free_vram:.1f}GB). CPU 오프로딩으로 시도합니다...")
+            cpu_offload = True
+        
+        await send_message(f"🔄 생성 모델 자동 로드 중... ({quantization})")
+        
+        # 모델 로드 진행
+        try:
+            device = get_device(target_device_setting)
+            
+            quant_info = QUANTIZATION_OPTIONS.get(quantization)
+            if not quant_info:
+                return False, f"지원하지 않는 양자화: {quantization}"
+            
+            repo_id = quant_info["repo"]
+            dtype = quant_info["type"]
+            is_gguf = quant_info.get("is_gguf", False)
+            
+            # 진행 상황 브로드캐스트
+            async def progress(percent, label, detail=""):
+                await ws_manager.broadcast({
+                    "type": "model_progress",
+                    "progress": percent,
+                    "label": label,
+                    "detail": detail,
+                    "stage": "loading" if percent < 100 else "complete"
+                })
+            
+            await progress(5, "🔧 모델 자동 로드 시작...", f"양자화: {dtype}")
+            
+            from diffusers import ZImagePipeline
+            
+            if is_gguf:
+                from diffusers import ZImageTransformer2DModel, GGUFQuantizationConfig
+                from huggingface_hub import hf_hub_download
+                
+                filename = quant_info["filename"]
+                
+                await progress(15, "📥 GGUF 모델 다운로드 확인 중...", f"파일: {filename}")
+                
+                gguf_path = await asyncio.to_thread(
+                    hf_hub_download,
+                    repo_id=repo_id,
+                    filename=filename,
+                    cache_dir=str(MODELS_DIR)
+                )
+                
+                await progress(35, "🔄 GGUF Transformer 로딩 중...", f"양자화 타입: {dtype}")
+                
+                transformer = await asyncio.to_thread(
+                    ZImageTransformer2DModel.from_single_file,
+                    gguf_path,
+                    quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
+                    torch_dtype=torch.bfloat16,
+                )
+                
+                await progress(60, "🔗 파이프라인 구성 중...", "")
+                
+                pipe = await asyncio.to_thread(
+                    ZImagePipeline.from_pretrained,
+                    "Tongyi-MAI/Z-Image-Turbo",
+                    transformer=transformer,
+                    torch_dtype=torch.bfloat16,
+                )
+            else:
+                await progress(15, "📥 모델 다운로드 확인 중...", f"저장소: {repo_id}")
+                
+                load_kwargs = {
+                    "torch_dtype": torch.bfloat16,
+                    "cache_dir": str(MODELS_DIR),
+                }
+                
+                await progress(35, "🔄 모델 파일 로딩 중...", "")
+                
+                pipe = await asyncio.to_thread(
+                    ZImagePipeline.from_pretrained,
+                    repo_id,
+                    **load_kwargs
+                )
+            
+            await progress(80, f"🚀 {device.upper()}로 모델 전송 중...", "")
+            
+            if cpu_offload:
+                await asyncio.to_thread(pipe.enable_model_cpu_offload)
+            else:
+                await asyncio.to_thread(pipe.to, device)
+            
+            current_model = quantization
+            
+            # GPU 모니터에 모델 등록
+            gpu_monitor.register_model("Z-Image-Turbo", device)
+            
+            await progress(100, "✅ 모델 자동 로드 완료!", f"VRAM: {get_vram_info()}")
+            
+            await ws_manager.broadcast({
+                "type": "model_status_change",
+                "model_loaded": True,
+                "current_model": current_model,
+                "device": device
+            })
+            
+            return True, f"생성 모델 자동 로드 완료: {quantization}"
+            
+        except Exception as e:
+            await ws_manager.broadcast({
+                "type": "model_progress",
+                "progress": 0,
+                "label": "❌ 자동 로드 실패",
+                "detail": str(e),
+                "stage": "error"
+            })
+            return False, f"생성 모델 자동 로드 실패: {str(e)}"
+
+
+async def ensure_edit_model_loaded(session_id: str = None) -> tuple[bool, str]:
+    """
+    편집 모델이 로드되어 있는지 확인하고, 없으면 자동 로드
+    VRAM이 부족하면 생성 모델을 먼저 언로드
+    
+    Args:
+        session_id: 메시지를 보낼 세션 ID (None이면 broadcast)
+    
+    Returns:
+        (success, message)
+    """
+    global pipe, current_model, edit_model_lock
+    
+    # 이미 로드되어 있으면 바로 반환
+    if qwen_edit_manager.is_loaded:
+        return True, "편집 모델이 이미 로드되어 있습니다."
+    
+    # 모델 잠금 확인
+    if edit_model_lock.locked():
+        return False, "다른 사용자가 편집 모델을 로드/언로드 중입니다. 잠시 후 다시 시도해주세요."
+    
+    async with edit_model_lock:
+        # 다시 확인 (lock 대기 중 로드되었을 수 있음)
+        if qwen_edit_manager.is_loaded:
+            return True, "편집 모델이 이미 로드되어 있습니다."
+        
+        # 설정에서 옵션 가져오기 (Qwen은 4bit NF4 고정)
+        cpu_offload = settings.get("edit_cpu_offload", True)
+        target_device_setting = settings.get("edit_gpu", DEFAULT_GPU_SETTINGS["edit_gpu"])
+
+        # 필요한 VRAM 계산 (Qwen-Image-Edit 4bit: ~16GB with CPU offload)
+        required_vram = QWEN_EDIT_MODEL_VRAM
+        
+        # 현재 VRAM 여유 확인
+        resolved_device = qwen_edit_manager.get_device(target_device_setting)
+        free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
+        
+        async def send_message(msg: str, msg_type: str = "edit_system"):
+            if session_id:
+                await ws_manager.send_to_session(session_id, {"type": msg_type, "content": msg})
+            else:
+                await ws_manager.broadcast({"type": msg_type, "content": msg})
+        
+        # VRAM이 부족하면 생성 모델 언로드
+        if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
+            if pipe is not None:
+                # 생성 모델 lock 확인
+                if model_lock.locked():
+                    return False, "생성 모델이 사용 중입니다. 잠시 후 다시 시도해주세요."
+                
+                async with model_lock:
+                    await send_message(f"⚠️ VRAM 부족 ({free_vram:.1f}GB < {required_vram:.1f}GB). 생성 모델을 언로드합니다...")
+                    await unload_generation_model_internal()
+                
+                # 언로드 후 VRAM 재확인
+                await asyncio.sleep(0.5)  # GPU 캐시 정리 대기
+                free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
+        
+        # 여전히 부족하면 경고만 하고 진행 (CPU 오프로딩 활성화)
+        if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
+            await send_message(f"⚠️ VRAM이 여전히 부족합니다 ({free_vram:.1f}GB). CPU 오프로딩으로 시도합니다...")
+            cpu_offload = True
+        
+        await send_message("🔄 Qwen-Image-Edit 모델 자동 로드 중... (NF4 4bit)")
+
+        # 진행 상황 콜백
+        async def progress_callback(percent, label, detail):
+            await ws_manager.broadcast({
+                "type": "edit_model_progress",
+                "progress": percent,
+                "label": label,
+                "detail": detail,
+                "stage": "loading" if percent < 100 else "complete"
+            })
+
+        # 모델 로드
+        success, message = await qwen_edit_manager.load_model(
+            cpu_offload=cpu_offload,
+            target_device=target_device_setting,
+            progress_callback=progress_callback
+        )
+        
+        if success:
+            await ws_manager.broadcast({
+                "type": "edit_model_status_change",
+                "model_loaded": True,
+                "current_model": qwen_edit_manager.current_model,
+                "device": qwen_edit_manager.device
+            })
+        
+        return success, message
 
 
 # ============= 자동 언로드 관련 함수 =============
@@ -135,10 +478,10 @@ async def auto_unload_checker():
                     "stage": "complete"
                 })
                 
-                print(f"✅ 자동 언로드 완료. VRAM: {get_vram_info()}")
+                print(f"[OK] Auto-unload complete. VRAM: {get_vram_info()}")
                 
             except Exception as e:
-                print(f"❌ 자동 언로드 실패: {e}")
+                print(f"[ERR] Auto-unload failed: {e}")
 
 
 @asynccontextmanager
@@ -148,11 +491,11 @@ async def lifespan(app: FastAPI):
     
     # 시작 시: 자동 언로드 체크 태스크 시작
     auto_unload_task = asyncio.create_task(auto_unload_checker())
-    print("🔄 자동 언로드 체커 시작됨")
+    print("[*] Auto unload checker started")
     
     # 큐 워커 시작
     await generation_queue.start_worker()
-    print("🔄 이미지 생성 큐 워커 시작됨")
+    print("[*] Image generation queue worker started")
     
     # 큐 콜백 설정
     generation_queue.set_callbacks(
@@ -176,7 +519,54 @@ async def lifespan(app: FastAPI):
 
 
 # ============= FastAPI 앱 설정 =============
-app = FastAPI(title="Z-Image WebUI", version="2.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="Z-Image WebUI", 
+    version="2.0.0", 
+    lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True}  # 인증 정보 유지
+)
+
+
+# OpenAPI 스키마에 API 키 인증 추가
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    from fastapi.openapi.utils import get_openapi
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        routes=app.routes,
+    )
+    
+    # securitySchemes 추가
+    openapi_schema["components"]["securitySchemes"] = {
+        "APIKeyAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "API Key",
+            "description": "API 키를 입력하세요 (zimg_로 시작하는 키). 설정 > API 키 관리에서 발급받을 수 있습니다."
+        }
+    }
+    
+    # API 키 인증이 필요한 엔드포인트에 security 설정 추가
+    api_key_endpoints = [
+        "/api/instant-generate",
+        "/api/generate",
+        "/api/edit/generate",
+    ]
+    
+    for path_key, path_item in openapi_schema.get("paths", {}).items():
+        if path_key in api_key_endpoints:
+            for method in path_item.values():
+                if isinstance(method, dict):
+                    method["security"] = [{"APIKeyAuth": []}]
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 # 정적 파일 및 템플릿
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
@@ -229,8 +619,7 @@ class SettingsRequest(BaseModel):
     # 모델 설정 (관리자 전용)
     quantization: Optional[str] = None
     cpu_offload: Optional[bool] = None
-    # 편집 모델 설정 (관리자 전용)
-    edit_quantization: Optional[str] = None
+    # 편집 모델 설정 (관리자 전용) - Qwen은 4bit NF4 고정
     edit_cpu_offload: Optional[bool] = None
 
 
@@ -255,17 +644,18 @@ class ConversationUpdateRequest(BaseModel):
 
 # ============= 편집 관련 Pydantic 모델 =============
 class EditModelLoadRequest(BaseModel):
-    quantization: str = "BF16 (기본, 최고품질)"
     model_path: str = ""
-    cpu_offload: bool = True  # 기본 활성화 (VRAM 절약)
+    cpu_offload: bool = True  # 기본 활성화 (VRAM 절약, ~16GB)
     target_device: str = "auto"  # 관리자 전용: "auto", "cuda:0", "cuda:1", "cpu", "mps"
 
 
 class EditGenerateRequest(BaseModel):
     prompt: str
+    negative_prompt: str = " "  # Qwen은 negative prompt 지원
     korean_prompt: str = ""
-    steps: int = 50
-    guidance_scale: float = 4.5
+    steps: int = 20  # Qwen 기본값
+    true_cfg_scale: float = 4.0  # Qwen 전용: 프롬프트 충실도
+    guidance_scale: float = 1.0  # Qwen 기본값
     seed: int = -1
     num_images: int = 1
     auto_translate: bool = True
@@ -362,6 +752,61 @@ def require_auth(session: Optional[SessionInfo]) -> None:
     """인증 필수 체크 - 로그인하지 않으면 예외 발생"""
     if not session or not session.is_authenticated:
         raise HTTPException(401, "로그인이 필요합니다.")
+
+
+# API 키 인증을 위한 보안 스키마 (Swagger docs에서 사용)
+api_key_scheme = HTTPBearer(
+    scheme_name="API Key",
+    description="API 키를 입력하세요 (zimg_로 시작하는 키)",
+    auto_error=False  # 인증 실패 시 자동 에러 발생 안 함 (세션 인증 폴백 허용)
+)
+
+
+async def get_api_key_auth(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(api_key_scheme)
+) -> Optional[str]:
+    """Swagger docs에서 API 키 인증을 위한 의존성"""
+    if credentials:
+        return credentials.credentials
+    return None
+
+
+def get_api_key_from_request(request: Request) -> Optional[str]:
+    """요청에서 API 키 추출 (Authorization: Bearer <api_key>)"""
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    return None
+
+
+async def get_auth_from_request(request: Request) -> Dict[str, Any]:
+    """
+    요청에서 인증 정보 가져오기 (API 키 또는 세션)
+    
+    Returns:
+        {"type": "api_key", "api_key": APIKey} 또는
+        {"type": "session", "session": SessionInfo} 또는
+        예외 발생
+    """
+    # 1. Authorization 헤더에서 API 키 확인
+    api_key_str = get_api_key_from_request(request)
+    if api_key_str:
+        is_valid, api_key_obj = api_key_manager.validate_api_key(api_key_str)
+        if is_valid and api_key_obj:
+            return {"type": "api_key", "api_key": api_key_obj}
+        raise HTTPException(401, "유효하지 않은 API 키입니다.")
+    
+    # 2. 기존 세션 인증으로 폴백
+    session = await get_session_from_request(request)
+    if session and session.is_authenticated:
+        return {"type": "session", "session": session}
+    
+    raise HTTPException(401, "인증이 필요합니다. 로그인하거나 API 키를 사용하세요.")
+
+
+async def require_auth_or_api_key(request: Request) -> Dict[str, Any]:
+    """인증 필수 체크 - 세션 또는 API 키 중 하나가 있어야 함"""
+    return await get_auth_from_request(request)
 
 
 def require_admin(request: Request) -> None:
@@ -1178,16 +1623,196 @@ async def unload_model(request: Request):
             raise HTTPException(500, str(e))
 
 
-@app.post("/api/generate")
-async def generate_image(request: Request, gen_request: GenerateRequest):
-    """이미지 생성 요청 (큐에 추가)"""
+# ============= Instant Generate API (휘발성 이미지 생성) =============
+class InstantGenerateRequest(BaseModel):
+    """휘발성 이미지 생성 요청"""
+    prompt: str
+    width: int = 512
+    height: int = 512
+    steps: int = 8
+    guidance_scale: float = 0.0
+    seed: int = -1
+    num_images: int = 1
+    auto_translate: bool = True
+
+
+@app.post("/api/instant-generate", summary="Instant Generate (No Save)", 
+          description="휘발성 이미지 생성 - 파일 저장 없이 메모리에서 바로 반환 (API 키 필수)")
+async def instant_generate_image(
+    request: Request,
+    gen_request: InstantGenerateRequest,
+    api_key: Optional[str] = Depends(get_api_key_auth)
+):
+    """
+    휘발성 이미지 생성 API
+    
+    - 이미지를 파일로 저장하지 않음
+    - 히스토리에 기록하지 않음
+    - base64로 직접 반환 후 메모리에서 삭제
+    - API 키 인증 필수
+    """
+    global pipe
     update_activity()
     
+    # API 키 인증 필수
+    api_key_str = api_key or get_api_key_from_request(request)
+    if not api_key_str:
+        raise HTTPException(401, "API 키가 필요합니다. Authorization: Bearer <api_key> 헤더를 사용하세요.")
+    
+    is_valid, api_key_obj = api_key_manager.validate_api_key(api_key_str)
+    if not is_valid:
+        raise HTTPException(401, "유효하지 않은 API 키입니다.")
+    
+    # 모델 체크
+    if pipe is None:
+        success, message = await ensure_generation_model_loaded()
+        if not success:
+            raise HTTPException(400, f"모델 자동 로드 실패: {message}")
+    
+    if not gen_request.prompt.strip():
+        raise HTTPException(400, "프롬프트를 입력해주세요.")
+    
+    try:
+        # 프롬프트 번역
+        final_prompt = gen_request.prompt
+        if gen_request.auto_translate and translator.is_korean(gen_request.prompt):
+            final_prompt, success = translator.translate(gen_request.prompt)
+        
+        # 시드 설정
+        seed = gen_request.seed
+        if seed == -1:
+            seed = random.randint(0, 2147483647)
+        
+        # GPU 메모리 정리
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        gc.collect()
+        
+        # 이미지 생성
+        images_response = []
+        current_seed = seed
+        
+        for i in range(gen_request.num_images):
+            generator = torch.Generator(device=device).manual_seed(current_seed)
+            
+            result = pipe(
+                prompt=final_prompt,
+                width=gen_request.width,
+                height=gen_request.height,
+                num_inference_steps=gen_request.steps,
+                guidance_scale=gen_request.guidance_scale,
+                generator=generator,
+            )
+            
+            result_image = result.images[0]
+            
+            # base64로 변환 (파일 저장 없음)
+            buffered = BytesIO()
+            result_image.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            buffered.close()
+            
+            images_response.append({
+                "base64": img_base64,
+                "seed": current_seed,
+                "width": result_image.width,
+                "height": result_image.height,
+            })
+            
+            # 다음 이미지를 위한 시드 증가
+            current_seed += 1
+            
+            # 메모리 정리
+            del result_image
+            del result
+        
+        # GPU 메모리 정리
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        
+        return {
+            "success": True,
+            "images": images_response,
+            "prompt": final_prompt,
+            "original_prompt": gen_request.prompt,
+            "settings": {
+                "width": gen_request.width,
+                "height": gen_request.height,
+                "steps": gen_request.steps,
+                "guidance_scale": gen_request.guidance_scale,
+                "seed": seed,
+                "num_images": gen_request.num_images,
+            }
+        }
+        
+    except Exception as e:
+        # GPU 메모리 정리
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        raise HTTPException(500, f"이미지 생성 실패: {str(e)}")
+
+
+@app.post("/api/generate", summary="Generate Image", description="이미지 생성 요청 (큐에 추가 또는 직접 실행)")
+async def generate_image(
+    request: Request, 
+    gen_request: GenerateRequest,
+    api_key: Optional[str] = Depends(get_api_key_auth)
+):
+    """이미지 생성 요청 (큐에 추가 또는 직접 실행)"""
+    update_activity()
+    
+    # API 키 또는 세션 인증 확인 (Swagger docs의 Authorize 버튼 또는 헤더에서)
+    api_key_str = api_key or get_api_key_from_request(request)
+    
+    if api_key_str:
+        # API 키 인증
+        is_valid, api_key_obj = api_key_manager.validate_api_key(api_key_str)
+        if not is_valid:
+            raise HTTPException(401, "유효하지 않은 API 키입니다.")
+        
+        # API 키로 호출 시: 직접 실행 모드 (동기적으로 결과 반환)
+        if pipe is None:
+            success, message = await ensure_generation_model_loaded()
+            if not success:
+                raise HTTPException(400, f"모델 자동 로드 실패: {message}")
+        
+        if not gen_request.prompt.strip():
+            raise HTTPException(400, "프롬프트를 입력해주세요.")
+        
+        # API 키 사용 시 별도 data_id 사용
+        api_data_id = f"api_key_{api_key_obj.id}"
+        
+        # 직접 이미지 생성 실행 (큐 없이)
+        try:
+            request_data = {
+                "session_id": api_data_id,
+                "prompt": gen_request.prompt,
+                "korean_prompt": gen_request.korean_prompt,
+                "width": gen_request.width,
+                "height": gen_request.height,
+                "steps": gen_request.steps,
+                "guidance_scale": gen_request.guidance_scale,
+                "seed": gen_request.seed,
+                "num_images": gen_request.num_images,
+                "auto_translate": gen_request.auto_translate,
+            }
+            result = await execute_generation(request_data)
+            return result
+        except Exception as e:
+            raise HTTPException(500, f"이미지 생성 실패: {str(e)}")
+    
+    # 기존 세션 인증 방식
     session = await get_session_from_request(request)
     require_auth(session)
     
+    # 모델이 로드되지 않았으면 자동 로드
     if pipe is None:
-        raise HTTPException(400, "모델이 로드되지 않았습니다.")
+        success, message = await ensure_generation_model_loaded(session.data_id)
+        if not success:
+            raise HTTPException(400, f"모델 자동 로드 실패: {message}")
     
     if not gen_request.prompt.strip():
         raise HTTPException(400, "프롬프트를 입력해주세요.")
@@ -1524,12 +2149,7 @@ async def save_settings(request: Request, settings_request: SettingsRequest):
     if settings_request.cpu_offload is not None:
         settings.set("cpu_offload", bool(settings_request.cpu_offload))
 
-    # 편집 모델 설정 (관리자 전용)
-    if settings_request.edit_quantization is not None:
-        if settings_request.edit_quantization not in EDIT_QUANTIZATION_OPTIONS:
-            raise HTTPException(400, f"지원하지 않는 편집 양자화: {settings_request.edit_quantization}")
-        settings.set("edit_quantization", settings_request.edit_quantization)
-
+    # 편집 모델 설정 (관리자 전용) - Qwen은 4bit NF4 고정
     if settings_request.edit_cpu_offload is not None:
         settings.set("edit_cpu_offload", bool(settings_request.edit_cpu_offload))
     
@@ -1611,7 +2231,7 @@ async def get_settings(request: Request):
         "auto_unload_timeout": settings.get("auto_unload_timeout", 10),
         # 편집 모델 자동 언로드 설정
         "edit_auto_unload_enabled": settings.get("edit_auto_unload_enabled", True),
-        "edit_auto_unload_timeout": settings.get("edit_auto_unload_timeout", LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT),
+        "edit_auto_unload_timeout": settings.get("edit_auto_unload_timeout", QWEN_EDIT_AUTO_UNLOAD_TIMEOUT),
     }
 
 
@@ -2046,11 +2666,11 @@ async def get_gpu_status(request: Request):
             "device": device,
         },
         "edit": {
-            "loaded": longcat_edit_manager.is_loaded,
-            "name": longcat_edit_manager.current_model,
-            "device": longcat_edit_manager.device,
-            "quantization": longcat_edit_manager.current_quantization,
-            "cpu_offload": longcat_edit_manager.cpu_offload_enabled,
+            "loaded": qwen_edit_manager.is_loaded,
+            "name": qwen_edit_manager.current_model,
+            "device": qwen_edit_manager.device,
+            "quantization": "NF4 (4bit)",  # Qwen은 4bit NF4 고정
+            "cpu_offload": qwen_edit_manager.cpu_offload_enabled,
         }
     }
     
@@ -2103,6 +2723,81 @@ async def get_available_devices(request: Request):
     }
 
 
+# ============= API 키 관리 API (관리자 전용) =============
+class CreateAPIKeyRequest(BaseModel):
+    """API 키 생성 요청"""
+    name: str
+
+
+class UpdateAPIKeyRequest(BaseModel):
+    """API 키 수정 요청"""
+    name: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@app.get("/api/admin/api-keys")
+async def list_api_keys(request: Request):
+    """API 키 목록 조회 (관리자 전용)"""
+    require_admin(request)
+    
+    keys = api_key_manager.list_api_keys()
+    return {"api_keys": keys}
+
+
+@app.post("/api/admin/api-keys")
+async def create_api_key(request: Request, data: CreateAPIKeyRequest):
+    """새 API 키 생성 (관리자 전용)"""
+    require_admin(request)
+    
+    success, message, full_key, api_key_obj = api_key_manager.create_api_key(data.name)
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    return {
+        "success": True,
+        "message": message,
+        "api_key": full_key,  # 전체 키는 생성 시에만 반환
+        "key_info": api_key_obj.to_dict() if api_key_obj else None
+    }
+
+
+@app.patch("/api/admin/api-keys/{key_id}")
+async def update_api_key(request: Request, key_id: int, data: UpdateAPIKeyRequest):
+    """API 키 수정 (관리자 전용)"""
+    require_admin(request)
+    
+    success, message = api_key_manager.update_api_key(
+        key_id, 
+        name=data.name, 
+        is_active=data.is_active
+    )
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    return {
+        "success": True,
+        "message": message
+    }
+
+
+@app.delete("/api/admin/api-keys/{key_id}")
+async def delete_api_key(request: Request, key_id: int):
+    """API 키 삭제 (관리자 전용)"""
+    require_admin(request)
+    
+    success, message = api_key_manager.delete_api_key(key_id)
+    
+    if not success:
+        raise HTTPException(400, message)
+    
+    return {
+        "success": True,
+        "message": message
+    }
+
+
 # ============= WebSocket =============
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str] = Cookie(default=None)):
@@ -2140,8 +2835,8 @@ async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str
         # 편집 모델 상태 전송
         await websocket.send_json({
             "type": "edit_model_status_change",
-            "model_loaded": longcat_edit_manager.is_loaded,
-            "current_model": longcat_edit_manager.current_model
+            "model_loaded": qwen_edit_manager.is_loaded,
+            "current_model": qwen_edit_manager.current_model
         })
         
         # 접속자 수 브로드캐스트
@@ -2173,7 +2868,7 @@ async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str
         })
 
 
-# ============= LongCat-Image-Edit API =============
+# ============= Qwen-Image-Edit API =============
 
 def update_edit_activity():
     """편집 모델 마지막 활동 시간 업데이트"""
@@ -2192,25 +2887,23 @@ async def get_edit_status(request: Request):
     is_admin = is_localhost(client_host)
     
     status = {
-        "model_loaded": longcat_edit_manager.is_loaded,
-        "current_model": longcat_edit_manager.current_model,
-        "current_quantization": longcat_edit_manager.current_quantization,
-        "cpu_offload_enabled": longcat_edit_manager.cpu_offload_enabled,
+        "model_loaded": qwen_edit_manager.is_loaded,
+        "current_model": qwen_edit_manager.current_model,
+        "current_quantization": "NF4 (4bit)",  # Qwen은 4bit NF4 고정
+        "cpu_offload_enabled": qwen_edit_manager.cpu_offload_enabled,
         # 저장된(기본) 편집 모델 설정값 - 새로고침/재시작 후 UI에서 유지되도록 제공
-        "saved_edit_quantization": settings.get("edit_quantization", "BF16 (기본, 최고품질)"),
         "saved_edit_cpu_offload": settings.get("edit_cpu_offload", True),
-        "device": longcat_edit_manager.device or longcat_edit_manager.get_device(),
+        "device": qwen_edit_manager.device or qwen_edit_manager.get_device(),
         "vram": get_vram_info(),
         "session_id": session.data_id,
         "is_admin": is_admin,
-        "quantization_options": list(EDIT_QUANTIZATION_OPTIONS.keys()),
-        # 양자화 옵션 상세 정보 (예상 VRAM 포함)
+        # Qwen은 4bit NF4 고정 (~16GB with CPU offload)
+        "quantization_options": ["NF4 (4bit)"],
         "quantization_details": {
-            name: {
-                "type": info.get("type"),
-                "estimated_vram": info.get("estimated_vram", "N/A"),
+            "NF4 (4bit)": {
+                "type": "nf4",
+                "estimated_vram": "~16GB (CPU offload)",
             }
-            for name, info in EDIT_QUANTIZATION_OPTIONS.items()
         },
     }
     
@@ -2223,7 +2916,7 @@ async def get_edit_status(request: Request):
 
 @app.post("/api/edit/model/load")
 async def load_edit_model(request: Request, model_request: EditModelLoadRequest):
-    """LongCat-Image-Edit 모델 로드"""
+    """Qwen-Image-Edit 모델 로드"""
     global edit_model_lock
     
     if edit_model_lock.locked():
@@ -2262,15 +2955,12 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 "stage": "init"
             })
             
-            # 양자화/CPU 오프로딩은 관리자만 변경 가능
-            requested_quantization = model_request.quantization
+            # CPU 오프로딩은 관리자만 변경 가능 (Qwen은 4bit NF4 고정)
             requested_cpu_offload = model_request.cpu_offload
             if not is_admin:
-                requested_quantization = settings.get("edit_quantization", requested_quantization)
                 requested_cpu_offload = settings.get("edit_cpu_offload", requested_cpu_offload)
 
-            success, message = await longcat_edit_manager.load_model(
-                quantization=requested_quantization,
+            success, message = await qwen_edit_manager.load_model(
                 cpu_offload=requested_cpu_offload,
                 model_path=model_request.model_path if model_request.model_path else None,
                 target_device=target_device,
@@ -2281,14 +2971,14 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 await ws_manager.broadcast({
                     "type": "edit_model_status_change",
                     "model_loaded": True,
-                    "current_model": longcat_edit_manager.current_model,
-                    "device": longcat_edit_manager.device
+                    "current_model": qwen_edit_manager.current_model,
+                    "device": qwen_edit_manager.device
                 })
                 await ws_manager.broadcast({
                     "type": "edit_system",
-                    "content": f"✅ 편집 모델 로드 완료! ({longcat_edit_manager.device})"
+                    "content": f"✅ 편집 모델 로드 완료! ({qwen_edit_manager.device})"
                 })
-                return {"success": True, "message": message, "device": longcat_edit_manager.device}
+                return {"success": True, "message": message, "device": qwen_edit_manager.device}
             else:
                 await ws_manager.broadcast({
                     "type": "edit_model_progress",
@@ -2309,7 +2999,7 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
 
 @app.post("/api/edit/model/unload")
 async def unload_edit_model(request: Request):
-    """LongCat-Image-Edit 모델 언로드"""
+    """Qwen-Image-Edit 모델 언로드"""
     global edit_model_lock
     
     if edit_model_lock.locked():
@@ -2324,7 +3014,7 @@ async def unload_edit_model(request: Request):
                 "detail": ""
             })
             
-            success, message = await longcat_edit_manager.unload_model()
+            success, message = await qwen_edit_manager.unload_model()
             
             await ws_manager.broadcast({
                 "type": "edit_model_progress",
@@ -2350,27 +3040,49 @@ async def unload_edit_model(request: Request):
             raise HTTPException(500, str(e))
 
 
-@app.post("/api/edit/generate")
+@app.post("/api/edit/generate", summary="Edit Image", description="이미지 편집 실행 (Qwen)")
 async def edit_image(
     request: Request,
-    image: UploadFile = File(...),
+    images: List[UploadFile] = File(..., description="편집할 이미지 (1~3장)"),
     prompt: str = Form(...),
+    negative_prompt: str = Form(" "),
     korean_prompt: str = Form(""),
-    steps: int = Form(50),
-    guidance_scale: float = Form(4.5),
+    steps: int = Form(20),
+    true_cfg_scale: float = Form(4.0),
+    guidance_scale: float = Form(1.0),
     seed: int = Form(-1),
     num_images: int = Form(1),
     auto_translate: str = Form("true"),
-    reference_image: Optional[UploadFile] = File(None)
+    api_key: Optional[str] = Depends(get_api_key_auth)
 ):
-    """이미지 편집 실행"""
+    """이미지 편집 실행 (Qwen - 1~3장 이미지 입력 지원)"""
     update_edit_activity()
     
-    session = await get_session_from_request(request)
-    require_auth(session)
+    # API 키 또는 세션 인증 확인 (Swagger docs의 Authorize 버튼 또는 헤더에서)
+    api_key_str = api_key or get_api_key_from_request(request)
+    api_key_obj = None
+    session = None
+    data_id = None
+    use_websocket = True
     
-    if not longcat_edit_manager.is_loaded:
-        raise HTTPException(400, "편집 모델이 로드되지 않았습니다.")
+    if api_key_str:
+        # API 키 인증
+        is_valid, api_key_obj = api_key_manager.validate_api_key(api_key_str)
+        if not is_valid:
+            raise HTTPException(401, "유효하지 않은 API 키입니다.")
+        data_id = f"api_key_{api_key_obj.id}"
+        use_websocket = False  # API 키 사용 시 웹소켓 알림 비활성화
+    else:
+        # 기존 세션 인증
+        session = await get_session_from_request(request)
+        require_auth(session)
+        data_id = session.data_id
+    
+    # 편집 모델이 로드되지 않았으면 자동 로드
+    if not qwen_edit_manager.is_loaded:
+        success, message = await ensure_edit_model_loaded(data_id if use_websocket else None)
+        if not success:
+            raise HTTPException(400, f"편집 모델 자동 로드 실패: {message}")
     
     if not prompt.strip():
         raise HTTPException(400, "편집 프롬프트를 입력해주세요.")
@@ -2382,61 +3094,63 @@ async def edit_image(
         # 이번 편집 요청의 고유 ID (입력/참조 이미지 파일명 등에 사용)
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
         
-        # 세션별 출력 디렉토리 (입력/참조/결과 모두 여기 저장)
-        outputs_dir = session.get_outputs_dir()
+        # 출력 디렉토리 (세션 또는 API 키별)
+        if session:
+            outputs_dir = session.get_outputs_dir()
+        else:
+            outputs_dir = OUTPUTS_DIR / data_id
         outputs_dir.mkdir(parents=True, exist_ok=True)
         
-        # 이미지 로드
-        image_data = await image.read()
-        pil_image = Image.open(BytesIO(image_data)).convert("RGB")
+        # 이미지 로드 (1~3장)
+        if len(images) > 3:
+            raise HTTPException(400, "최대 3장의 이미지만 업로드할 수 있습니다.")
         
-        # 업로드된 원본 이미지를 출력 폴더에 저장 (편집기록에서 원본 확인용)
-        original_filename = f"edit_input_{run_id}.png"
-        original_output_path = outputs_dir / original_filename
-        pil_image.save(original_output_path, format="PNG")
-        original_image_url = f"/outputs/{session.data_id}/{original_filename}"
+        pil_images = []
+        original_image_urls = []
         
-        # 참조 이미지 로드 (있으면)
-        ref_image = None
-        reference_image_url = None
-        if reference_image:
-            ref_data = await reference_image.read()
-            ref_image = Image.open(BytesIO(ref_data)).convert("RGB")
+        for idx, img_file in enumerate(images):
+            image_data = await img_file.read()
+            pil_image = Image.open(BytesIO(image_data)).convert("RGB")
+            pil_images.append(pil_image)
             
-            # 참조 이미지도 저장 (추후 편집기록 확장/디버깅용)
-            reference_filename = f"edit_reference_{run_id}.png"
-            reference_output_path = outputs_dir / reference_filename
-            ref_image.save(reference_output_path, format="PNG")
-            reference_image_url = f"/outputs/{session.data_id}/{reference_filename}"
+            # 업로드된 원본 이미지를 출력 폴더에 저장 (편집기록에서 원본 확인용)
+            original_filename = f"edit_input_{run_id}_{idx+1}.png"
+            original_output_path = outputs_dir / original_filename
+            pil_image.save(original_output_path, format="PNG")
+            original_image_urls.append(f"/outputs/{data_id}/{original_filename}")
         
         # 프롬프트 번역
         final_prompt = prompt
         if auto_translate_bool and edit_translator.is_korean(prompt):
-            await ws_manager.send_to_session(session.data_id, {
-                "type": "edit_system",
-                "content": "🌐 편집 지시어 번역 중..."
-            })
+            if use_websocket:
+                await ws_manager.send_to_session(data_id, {
+                    "type": "edit_system",
+                    "content": "🌐 편집 지시어 번역 중..."
+                })
             final_prompt, success = edit_translator.translate(prompt)
-            if not success:
-                await ws_manager.send_to_session(session.data_id, {
+            if not success and use_websocket:
+                await ws_manager.send_to_session(data_id, {
                     "type": "edit_system",
                     "content": "⚠️ 번역 실패, 원문 사용"
                 })
         
         # 편집 시작 메시지
-        await ws_manager.send_to_session(session.data_id, {
-            "type": "edit_system",
-            "content": "🎨 이미지 편집 중..."
-        })
+        if use_websocket:
+            await ws_manager.send_to_session(data_id, {
+                "type": "edit_system",
+                "content": "🎨 이미지 편집 중..."
+            })
         
         # 진행 상황 콜백 정의
         async def edit_progress_callback(current_image: int, total_images: int, current_step: int, total_steps: int):
+            if not use_websocket:
+                return
             # 전체 진행률 계산 (이미지 + 스텝 기준)
             image_progress = (current_image - 1) / total_images
             step_progress = current_step / total_steps / total_images
             overall_progress = int((image_progress + step_progress) * 100)
             
-            await ws_manager.send_to_session(session.data_id, {
+            await ws_manager.send_to_session(data_id, {
                 "type": "edit_progress",
                 "current_image": current_image,
                 "total_images": total_images,
@@ -2447,20 +3161,23 @@ async def edit_image(
         
         # 상태 메시지 콜백 정의 (참조 이미지 분석 등)
         async def edit_status_callback(message: str):
-            await ws_manager.send_to_session(session.data_id, {
+            if not use_websocket:
+                return
+            await ws_manager.send_to_session(data_id, {
                 "type": "edit_system",
                 "content": message
             })
         
-        # 편집 실행
-        success, results, message = await longcat_edit_manager.edit_image(
-            image=pil_image,
+        # 편집 실행 (Qwen)
+        success, results, message = await qwen_edit_manager.edit_image(
+            images=pil_images,
             prompt=final_prompt,
+            negative_prompt=negative_prompt,
             num_inference_steps=steps,
+            true_cfg_scale=true_cfg_scale,
             guidance_scale=guidance_scale,
             seed=seed,
             num_images=num_images,
-            reference_image=ref_image,
             progress_callback=edit_progress_callback,
             status_callback=edit_status_callback
         )
@@ -2493,7 +3210,7 @@ async def edit_image(
                 height=result_image.height,
                 steps=steps,
                 guidance_scale=guidance_scale,
-                model="LongCat-Image-Edit",
+                model="Qwen-Image-Edit",
             )
             ImageMetadata.save_with_metadata(result_image, output_path, metadata)
             
@@ -2502,38 +3219,40 @@ async def edit_image(
                 "base64": image_to_base64(result_image),
                 "filename": filename,
                 "seed": seed,
-                "path": f"/outputs/{session.data_id}/{filename}"
+                "path": f"/outputs/{data_id}/{filename}"
             })
         
         # 히스토리 저장
-        edit_history_mgr = get_edit_history_manager_sync(session.data_id)
+        edit_history_mgr = get_edit_history_manager_sync(data_id)
         history_entry = edit_history_mgr.add(
             prompt=final_prompt,
+            negative_prompt=negative_prompt,
             korean_prompt=korean_prompt,
             settings={
                 "steps": steps,
+                "true_cfg_scale": true_cfg_scale,
                 "guidance_scale": guidance_scale,
                 "seed": results[0]["seed"] if results else -1,
             },
-            original_image_path=original_image_url,
-            reference_image_path=reference_image_url,
+            original_image_paths=original_image_urls,
             result_image_paths=[img["path"] for img in images_response]
         )
         
         # 완료 메시지
-        await ws_manager.send_to_session(session.data_id, {
-            "type": "edit_system",
-            "content": f"✅ 편집 완료! (시드: {results[0]['seed'] if results else 'N/A'})"
-        })
-        
-        # 결과 전송
-        await ws_manager.send_to_session(session.data_id, {
-            "type": "edit_result",
-            "images": images_response,
-            "seed": results[0]["seed"] if results else -1,
-            "prompt": final_prompt,
-            "history_id": history_entry.id
-        })
+        if use_websocket:
+            await ws_manager.send_to_session(data_id, {
+                "type": "edit_system",
+                "content": f"✅ 편집 완료! (시드: {results[0]['seed'] if results else 'N/A'})"
+            })
+            
+            # 결과 전송
+            await ws_manager.send_to_session(data_id, {
+                "type": "edit_result",
+                "images": images_response,
+                "seed": results[0]["seed"] if results else -1,
+                "prompt": final_prompt,
+                "history_id": history_entry.id
+            })
         
         return {
             "success": True,
@@ -2544,10 +3263,11 @@ async def edit_image(
         }
         
     except Exception as e:
-        await ws_manager.send_to_session(session.data_id, {
-            "type": "error",
-            "content": f"❌ 편집 오류: {str(e)}"
-        })
+        if use_websocket:
+            await ws_manager.send_to_session(data_id, {
+                "type": "error",
+                "content": f"❌ 편집 오류: {str(e)}"
+            })
         raise HTTPException(500, str(e))
 
 
@@ -2682,9 +3402,9 @@ if __name__ == "__main__":
     # 출력 폴더 생성
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     
-    print("🎨 Z-Image WebUI 시작...")
-    print(f"📍 http://localhost:{SERVER_PORT}")
-    print("🌐 다중 사용자 지원 활성화")
+    print("[*] Z-Image WebUI starting...")
+    print(f"[*] http://localhost:{SERVER_PORT}")
+    print("[*] Multi-user support enabled")
     
     uvicorn.run(
         app,

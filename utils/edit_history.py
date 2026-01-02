@@ -19,12 +19,12 @@ class EditHistoryEntry:
     """편집 히스토리 항목"""
     id: str
     prompt: str  # 편집 프롬프트
+    negative_prompt: Optional[str] = None  # 네거티브 프롬프트 (Qwen)
     korean_prompt: Optional[str] = None  # 한국어 프롬프트
     settings: Dict[str, Any] = field(default_factory=dict)  # 편집 설정
     timestamp: str = ""
-    original_image_path: Optional[str] = None  # 원본 이미지 경로
+    original_image_paths: List[str] = field(default_factory=list)  # 원본 이미지 경로들 (1~3장, Qwen)
     result_image_paths: List[str] = field(default_factory=list)  # 결과 이미지 경로들
-    reference_image_path: Optional[str] = None  # 참조 이미지 경로
     parent_id: Optional[str] = None  # 멀티턴 편집 시 이전 편집 ID
     conversation: Optional[List[Dict[str, Any]]] = None  # 대화 내용
     
@@ -35,14 +35,21 @@ class EditHistoryEntry:
     def from_dict(cls, data: Dict[str, Any]) -> "EditHistoryEntry":
         # 기존 데이터 호환성 유지
         defaults = {
+            "negative_prompt": None,
             "korean_prompt": None,
             "settings": {},
-            "original_image_path": None,
+            "original_image_paths": [],
             "result_image_paths": [],
-            "reference_image_path": None,
             "parent_id": None,
             "conversation": None,
         }
+        # 기존 original_image_path -> original_image_paths 마이그레이션
+        if "original_image_path" in data and "original_image_paths" not in data:
+            old_path = data.pop("original_image_path")
+            data["original_image_paths"] = [old_path] if old_path else []
+        # reference_image_path 제거 (Qwen에서는 사용 안 함)
+        data.pop("reference_image_path", None)
+        
         for key, default_value in defaults.items():
             if key not in data:
                 data[key] = default_value
@@ -120,10 +127,10 @@ class EditHistoryManager:
     def add(
         self,
         prompt: str,
+        negative_prompt: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
-        original_image_path: Optional[str] = None,
+        original_image_paths: Optional[List[str]] = None,
         result_image_paths: Optional[List[str]] = None,
-        reference_image_path: Optional[str] = None,
         parent_id: Optional[str] = None,
         conversation: Optional[List[Dict[str, Any]]] = None,
         korean_prompt: Optional[str] = None
@@ -132,12 +139,12 @@ class EditHistoryManager:
         entry = EditHistoryEntry(
             id=datetime.now().strftime("%Y%m%d%H%M%S%f"),
             prompt=prompt,
+            negative_prompt=negative_prompt,
             korean_prompt=korean_prompt,
             settings=settings or {},
             timestamp=datetime.now().isoformat(),
-            original_image_path=original_image_path,
+            original_image_paths=original_image_paths or [],
             result_image_paths=result_image_paths or [],
-            reference_image_path=reference_image_path,
             parent_id=parent_id,
             conversation=conversation
         )
@@ -155,10 +162,10 @@ class EditHistoryManager:
     async def add_async(
         self,
         prompt: str,
+        negative_prompt: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
-        original_image_path: Optional[str] = None,
+        original_image_paths: Optional[List[str]] = None,
         result_image_paths: Optional[List[str]] = None,
-        reference_image_path: Optional[str] = None,
         parent_id: Optional[str] = None,
         conversation: Optional[List[Dict[str, Any]]] = None,
         korean_prompt: Optional[str] = None
@@ -167,12 +174,12 @@ class EditHistoryManager:
         entry = EditHistoryEntry(
             id=datetime.now().strftime("%Y%m%d%H%M%S%f"),
             prompt=prompt,
+            negative_prompt=negative_prompt,
             korean_prompt=korean_prompt,
             settings=settings or {},
             timestamp=datetime.now().isoformat(),
-            original_image_path=original_image_path,
+            original_image_paths=original_image_paths or [],
             result_image_paths=result_image_paths or [],
-            reference_image_path=reference_image_path,
             parent_id=parent_id,
             conversation=conversation
         )

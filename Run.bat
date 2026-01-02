@@ -9,6 +9,23 @@ echo.
 
 cd /d "%~dp0"
 
+REM Git 업데이트 확인
+if exist ".git" (
+    echo [*] Git 저장소 업데이트 확인 중...
+    git fetch origin
+    git pull origin
+    
+    REM 서브모듈 업데이트
+    if exist ".gitmodules" (
+        echo [*] 서브모듈 업데이트 중...
+        git submodule update --init --recursive
+    )
+    echo.
+) else (
+    echo [!] Git 저장소가 아닙니다. 업데이트를 건너뜁니다.
+    echo.
+)
+
 if exist "venv\Scripts\activate.bat" (
     echo [*] 가상환경 활성화 중...
     call venv\Scripts\activate.bat
