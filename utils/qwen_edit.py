@@ -131,20 +131,6 @@ class QwenEditManager:
                     torch_dtype=preferred_dtype,
                 )
                 
-                # 메모리 최적화 설정 (Windows 호환)
-                report_progress(70, "🔧 메모리 최적화 설정 중...", "VAE slicing/tiling, Attention slicing 활성화")
-                
-                await asyncio.to_thread(self.pipe.enable_vae_slicing)
-                await asyncio.to_thread(self.pipe.enable_vae_tiling)
-                await asyncio.to_thread(self.pipe.enable_attention_slicing, "auto")
-                
-                # xFormers 시도 (선택사항)
-                try:
-                    await asyncio.to_thread(self.pipe.enable_xformers_memory_efficient_attention)
-                    report_progress(75, "✅ xFormers 활성화됨", "")
-                except Exception:
-                    pass  # 미설치 시 무시
-                
                 # 디바이스 설정
                 report_progress(80, f"🚀 {self.device.upper()}로 모델 전송 중...", "")
                 
