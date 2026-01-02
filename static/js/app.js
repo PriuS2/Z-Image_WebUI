@@ -661,7 +661,7 @@ async function apiCallWithTimeout(endpoint, method, body, timeout = LLM_TIMEOUT)
     } catch (error) {
         clearTimeout(timeoutId);
         if (error.name === 'AbortError') {
-            throw new Error('요청 시간 초과 (5초)');
+            throw new Error('요청 시간 초과 (5초)\n모델이 로드되지 않았을 수 있으니 다시 시도해주세요.');
         }
         throw error;
     }
@@ -681,7 +681,7 @@ async function generateImage(preview = false) {
         addMessage('system', '🌐 번역 후 생성합니다...');
         const translated = await translateKoreanInput();
         if (!translated) {
-            addMessage('system', '❌ 번역 실패로 생성을 중단합니다.');
+            addMessage('system', '❌ 번역 실패로 생성을 중단합니다.\n모델이 로드되지 않았을 수 있으니 다시 시도해주세요.');
             return;
         }
         prompt = promptInput.value.trim();
