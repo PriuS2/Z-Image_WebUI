@@ -3603,7 +3603,6 @@ async function loadEditModel() {
 
         const targetDevice = isAdmin ? (adminGpuSettings.edit_gpu || 'auto') : 'auto';
         await apiCall('/edit/model/load', 'POST', {
-            quantization,
             cpu_offload: cpuOffload,
             target_device: targetDevice
         });
