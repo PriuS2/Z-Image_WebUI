@@ -34,14 +34,15 @@ from PIL import Image
 # 로컬 모듈
 from config.defaults import (
     QUANTIZATION_OPTIONS,
-    EDIT_QUANTIZATION_OPTIONS,
     RESOLUTION_PRESETS,
     OUTPUTS_DIR,
     MODELS_DIR,
     SERVER_HOST,
     SERVER_PORT,
     SERVER_RELOAD,
-    LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT,
+    QWEN_EDIT_AUTO_UNLOAD_TIMEOUT,
+    QWEN_EDIT_MODEL_VRAM,
+    DEFAULT_QWEN_EDIT_SETTINGS,
     DEFAULT_GPU_SETTINGS,
 )
 from config.templates import PROMPT_TEMPLATES
@@ -55,7 +56,7 @@ from utils.session import session_manager, is_localhost, SessionManager, Session
 from utils.queue_manager import generation_queue, GenerationQueueManager
 from utils.auth import auth_manager, User
 from utils.api_keys import api_key_manager, APIKey
-from utils.longcat_edit import longcat_edit_manager
+from utils.qwen_edit import qwen_edit_manager
 from utils.edit_history import get_edit_history_manager_sync, EditHistoryManager, clear_edit_history_manager_cache
 from utils.edit_llm import edit_translator, edit_enhancer, edit_suggester
 from utils.gpu_monitor import gpu_monitor
@@ -69,7 +70,7 @@ last_activity_time = time.time()  # 마지막 활동 시간
 auto_unload_task = None  # 자동 언로드 체크 태스크
 model_lock = asyncio.Lock()  # 모델 로드/언로드 잠금
 
-# LongCat-Image-Edit 관련
+# Qwen-Image-Edit 관련
 edit_last_activity_time = time.time()  # 편집 모델 마지막 활동 시간
 edit_auto_unload_task = None  # 편집 모델 자동 언로드 태스크
 edit_model_lock = asyncio.Lock()  # 편집 모델 로드/언로드 잠금
@@ -87,13 +88,6 @@ GENERATION_MODEL_VRAM = {
     "GGUF Q4_K_S (4.66GB, 경량)": 4.9,
     "GGUF Q3_K_M (4.12GB, 저사양)": 4.4,
     "GGUF Q3_K_S (3.79GB, 최저사양)": 4.1,
-}
-
-# 편집 모델: 양자화에 따라 다름
-EDIT_MODEL_VRAM = {
-    "BF16 (기본, 최고품질)": 22.0,
-    "INT8 (절반 용량, 고품질)": 13.0,
-    "INT4 (1/4 용량, 균형)": 9.0,
 }
 
 
@@ -135,15 +129,15 @@ async def unload_generation_model_internal():
 
 async def unload_edit_model_internal():
     """편집 모델 내부 언로드 (lock 없이)"""
-    if not longcat_edit_manager.is_loaded:
+    if not qwen_edit_manager.is_loaded:
         return
     
     print("[*] Auto-unloading edit model...")
     
-    old_model = longcat_edit_manager.current_model
+    old_model = qwen_edit_manager.current_model
     
     # 편집 모델 언로드 (내부 lock 사용)
-    success, message = await longcat_edit_manager.unload_model()
+    success, message = await qwen_edit_manager.unload_model()
     
     if success:
         # 클라이언트에게 알림
@@ -206,7 +200,7 @@ async def ensure_generation_model_loaded(session_id: str = None) -> tuple[bool, 
         
         # VRAM이 부족하면 편집 모델 언로드
         if not gpu_monitor.has_enough_vram(required_vram, resolved_device):
-            if longcat_edit_manager.is_loaded:
+            if qwen_edit_manager.is_loaded:
                 await send_message(f"⚠️ VRAM 부족 ({free_vram:.1f}GB < {required_vram:.1f}GB). 편집 모델을 언로드합니다...")
                 await unload_edit_model_internal()
                 
@@ -343,7 +337,7 @@ async def ensure_edit_model_loaded(session_id: str = None) -> tuple[bool, str]:
     global pipe, current_model, edit_model_lock
     
     # 이미 로드되어 있으면 바로 반환
-    if longcat_edit_manager.is_loaded:
+    if qwen_edit_manager.is_loaded:
         return True, "편집 모델이 이미 로드되어 있습니다."
     
     # 모델 잠금 확인
@@ -352,19 +346,18 @@ async def ensure_edit_model_loaded(session_id: str = None) -> tuple[bool, str]:
     
     async with edit_model_lock:
         # 다시 확인 (lock 대기 중 로드되었을 수 있음)
-        if longcat_edit_manager.is_loaded:
+        if qwen_edit_manager.is_loaded:
             return True, "편집 모델이 이미 로드되어 있습니다."
         
-        # 설정에서 양자화 옵션 가져오기
-        quantization = settings.get("edit_quantization", "BF16 (기본, 최고품질)")
+        # 설정에서 옵션 가져오기 (Qwen은 4bit NF4 고정)
         cpu_offload = settings.get("edit_cpu_offload", True)
         target_device_setting = settings.get("edit_gpu", DEFAULT_GPU_SETTINGS["edit_gpu"])
-        
-        # 필요한 VRAM 계산
-        required_vram = EDIT_MODEL_VRAM.get(quantization, 22.0)
+
+        # 필요한 VRAM 계산 (Qwen-Image-Edit 4bit: ~16GB with CPU offload)
+        required_vram = QWEN_EDIT_MODEL_VRAM
         
         # 현재 VRAM 여유 확인
-        resolved_device = longcat_edit_manager.get_device(target_device_setting)
+        resolved_device = qwen_edit_manager.get_device(target_device_setting)
         free_vram = gpu_monitor.get_free_vram_gb(resolved_device)
         
         async def send_message(msg: str, msg_type: str = "edit_system"):
@@ -393,8 +386,8 @@ async def ensure_edit_model_loaded(session_id: str = None) -> tuple[bool, str]:
             await send_message(f"⚠️ VRAM이 여전히 부족합니다 ({free_vram:.1f}GB). CPU 오프로딩으로 시도합니다...")
             cpu_offload = True
         
-        await send_message(f"🔄 편집 모델 자동 로드 중... ({quantization})")
-        
+        await send_message("🔄 Qwen-Image-Edit 모델 자동 로드 중... (NF4 4bit)")
+
         # 진행 상황 콜백
         async def progress_callback(percent, label, detail):
             await ws_manager.broadcast({
@@ -404,10 +397,9 @@ async def ensure_edit_model_loaded(session_id: str = None) -> tuple[bool, str]:
                 "detail": detail,
                 "stage": "loading" if percent < 100 else "complete"
             })
-        
+
         # 모델 로드
-        success, message = await longcat_edit_manager.load_model(
-            quantization=quantization,
+        success, message = await qwen_edit_manager.load_model(
             cpu_offload=cpu_offload,
             target_device=target_device_setting,
             progress_callback=progress_callback
@@ -417,8 +409,8 @@ async def ensure_edit_model_loaded(session_id: str = None) -> tuple[bool, str]:
             await ws_manager.broadcast({
                 "type": "edit_model_status_change",
                 "model_loaded": True,
-                "current_model": longcat_edit_manager.current_model,
-                "device": longcat_edit_manager.device
+                "current_model": qwen_edit_manager.current_model,
+                "device": qwen_edit_manager.device
             })
         
         return success, message
@@ -627,8 +619,7 @@ class SettingsRequest(BaseModel):
     # 모델 설정 (관리자 전용)
     quantization: Optional[str] = None
     cpu_offload: Optional[bool] = None
-    # 편집 모델 설정 (관리자 전용)
-    edit_quantization: Optional[str] = None
+    # 편집 모델 설정 (관리자 전용) - Qwen은 4bit NF4 고정
     edit_cpu_offload: Optional[bool] = None
 
 
@@ -653,17 +644,18 @@ class ConversationUpdateRequest(BaseModel):
 
 # ============= 편집 관련 Pydantic 모델 =============
 class EditModelLoadRequest(BaseModel):
-    quantization: str = "BF16 (기본, 최고품질)"
     model_path: str = ""
-    cpu_offload: bool = True  # 기본 활성화 (VRAM 절약)
+    cpu_offload: bool = True  # 기본 활성화 (VRAM 절약, ~16GB)
     target_device: str = "auto"  # 관리자 전용: "auto", "cuda:0", "cuda:1", "cpu", "mps"
 
 
 class EditGenerateRequest(BaseModel):
     prompt: str
+    negative_prompt: str = " "  # Qwen은 negative prompt 지원
     korean_prompt: str = ""
-    steps: int = 50
-    guidance_scale: float = 4.5
+    steps: int = 20  # Qwen 기본값
+    true_cfg_scale: float = 4.0  # Qwen 전용: 프롬프트 충실도
+    guidance_scale: float = 1.0  # Qwen 기본값
     seed: int = -1
     num_images: int = 1
     auto_translate: bool = True
@@ -2157,12 +2149,7 @@ async def save_settings(request: Request, settings_request: SettingsRequest):
     if settings_request.cpu_offload is not None:
         settings.set("cpu_offload", bool(settings_request.cpu_offload))
 
-    # 편집 모델 설정 (관리자 전용)
-    if settings_request.edit_quantization is not None:
-        if settings_request.edit_quantization not in EDIT_QUANTIZATION_OPTIONS:
-            raise HTTPException(400, f"지원하지 않는 편집 양자화: {settings_request.edit_quantization}")
-        settings.set("edit_quantization", settings_request.edit_quantization)
-
+    # 편집 모델 설정 (관리자 전용) - Qwen은 4bit NF4 고정
     if settings_request.edit_cpu_offload is not None:
         settings.set("edit_cpu_offload", bool(settings_request.edit_cpu_offload))
     
@@ -2244,7 +2231,7 @@ async def get_settings(request: Request):
         "auto_unload_timeout": settings.get("auto_unload_timeout", 10),
         # 편집 모델 자동 언로드 설정
         "edit_auto_unload_enabled": settings.get("edit_auto_unload_enabled", True),
-        "edit_auto_unload_timeout": settings.get("edit_auto_unload_timeout", LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT),
+        "edit_auto_unload_timeout": settings.get("edit_auto_unload_timeout", QWEN_EDIT_AUTO_UNLOAD_TIMEOUT),
     }
 
 
@@ -2679,11 +2666,11 @@ async def get_gpu_status(request: Request):
             "device": device,
         },
         "edit": {
-            "loaded": longcat_edit_manager.is_loaded,
-            "name": longcat_edit_manager.current_model,
-            "device": longcat_edit_manager.device,
-            "quantization": longcat_edit_manager.current_quantization,
-            "cpu_offload": longcat_edit_manager.cpu_offload_enabled,
+            "loaded": qwen_edit_manager.is_loaded,
+            "name": qwen_edit_manager.current_model,
+            "device": qwen_edit_manager.device,
+            "quantization": "NF4 (4bit)",  # Qwen은 4bit NF4 고정
+            "cpu_offload": qwen_edit_manager.cpu_offload_enabled,
         }
     }
     
@@ -2848,8 +2835,8 @@ async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str
         # 편집 모델 상태 전송
         await websocket.send_json({
             "type": "edit_model_status_change",
-            "model_loaded": longcat_edit_manager.is_loaded,
-            "current_model": longcat_edit_manager.current_model
+            "model_loaded": qwen_edit_manager.is_loaded,
+            "current_model": qwen_edit_manager.current_model
         })
         
         # 접속자 수 브로드캐스트
@@ -2881,7 +2868,7 @@ async def websocket_endpoint(websocket: WebSocket, z_image_session: Optional[str
         })
 
 
-# ============= LongCat-Image-Edit API =============
+# ============= Qwen-Image-Edit API =============
 
 def update_edit_activity():
     """편집 모델 마지막 활동 시간 업데이트"""
@@ -2900,25 +2887,23 @@ async def get_edit_status(request: Request):
     is_admin = is_localhost(client_host)
     
     status = {
-        "model_loaded": longcat_edit_manager.is_loaded,
-        "current_model": longcat_edit_manager.current_model,
-        "current_quantization": longcat_edit_manager.current_quantization,
-        "cpu_offload_enabled": longcat_edit_manager.cpu_offload_enabled,
+        "model_loaded": qwen_edit_manager.is_loaded,
+        "current_model": qwen_edit_manager.current_model,
+        "current_quantization": "NF4 (4bit)",  # Qwen은 4bit NF4 고정
+        "cpu_offload_enabled": qwen_edit_manager.cpu_offload_enabled,
         # 저장된(기본) 편집 모델 설정값 - 새로고침/재시작 후 UI에서 유지되도록 제공
-        "saved_edit_quantization": settings.get("edit_quantization", "BF16 (기본, 최고품질)"),
         "saved_edit_cpu_offload": settings.get("edit_cpu_offload", True),
-        "device": longcat_edit_manager.device or longcat_edit_manager.get_device(),
+        "device": qwen_edit_manager.device or qwen_edit_manager.get_device(),
         "vram": get_vram_info(),
         "session_id": session.data_id,
         "is_admin": is_admin,
-        "quantization_options": list(EDIT_QUANTIZATION_OPTIONS.keys()),
-        # 양자화 옵션 상세 정보 (예상 VRAM 포함)
+        # Qwen은 4bit NF4 고정 (~16GB with CPU offload)
+        "quantization_options": ["NF4 (4bit)"],
         "quantization_details": {
-            name: {
-                "type": info.get("type"),
-                "estimated_vram": info.get("estimated_vram", "N/A"),
+            "NF4 (4bit)": {
+                "type": "nf4",
+                "estimated_vram": "~16GB (CPU offload)",
             }
-            for name, info in EDIT_QUANTIZATION_OPTIONS.items()
         },
     }
     
@@ -2931,7 +2916,7 @@ async def get_edit_status(request: Request):
 
 @app.post("/api/edit/model/load")
 async def load_edit_model(request: Request, model_request: EditModelLoadRequest):
-    """LongCat-Image-Edit 모델 로드"""
+    """Qwen-Image-Edit 모델 로드"""
     global edit_model_lock
     
     if edit_model_lock.locked():
@@ -2970,15 +2955,12 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 "stage": "init"
             })
             
-            # 양자화/CPU 오프로딩은 관리자만 변경 가능
-            requested_quantization = model_request.quantization
+            # CPU 오프로딩은 관리자만 변경 가능 (Qwen은 4bit NF4 고정)
             requested_cpu_offload = model_request.cpu_offload
             if not is_admin:
-                requested_quantization = settings.get("edit_quantization", requested_quantization)
                 requested_cpu_offload = settings.get("edit_cpu_offload", requested_cpu_offload)
 
-            success, message = await longcat_edit_manager.load_model(
-                quantization=requested_quantization,
+            success, message = await qwen_edit_manager.load_model(
                 cpu_offload=requested_cpu_offload,
                 model_path=model_request.model_path if model_request.model_path else None,
                 target_device=target_device,
@@ -2989,14 +2971,14 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
                 await ws_manager.broadcast({
                     "type": "edit_model_status_change",
                     "model_loaded": True,
-                    "current_model": longcat_edit_manager.current_model,
-                    "device": longcat_edit_manager.device
+                    "current_model": qwen_edit_manager.current_model,
+                    "device": qwen_edit_manager.device
                 })
                 await ws_manager.broadcast({
                     "type": "edit_system",
-                    "content": f"✅ 편집 모델 로드 완료! ({longcat_edit_manager.device})"
+                    "content": f"✅ 편집 모델 로드 완료! ({qwen_edit_manager.device})"
                 })
-                return {"success": True, "message": message, "device": longcat_edit_manager.device}
+                return {"success": True, "message": message, "device": qwen_edit_manager.device}
             else:
                 await ws_manager.broadcast({
                     "type": "edit_model_progress",
@@ -3017,7 +2999,7 @@ async def load_edit_model(request: Request, model_request: EditModelLoadRequest)
 
 @app.post("/api/edit/model/unload")
 async def unload_edit_model(request: Request):
-    """LongCat-Image-Edit 모델 언로드"""
+    """Qwen-Image-Edit 모델 언로드"""
     global edit_model_lock
     
     if edit_model_lock.locked():
@@ -3032,7 +3014,7 @@ async def unload_edit_model(request: Request):
                 "detail": ""
             })
             
-            success, message = await longcat_edit_manager.unload_model()
+            success, message = await qwen_edit_manager.unload_model()
             
             await ws_manager.broadcast({
                 "type": "edit_model_progress",
@@ -3058,21 +3040,22 @@ async def unload_edit_model(request: Request):
             raise HTTPException(500, str(e))
 
 
-@app.post("/api/edit/generate", summary="Edit Image", description="이미지 편집 실행")
+@app.post("/api/edit/generate", summary="Edit Image", description="이미지 편집 실행 (Qwen)")
 async def edit_image(
     request: Request,
-    image: UploadFile = File(...),
+    images: List[UploadFile] = File(..., description="편집할 이미지 (1~3장)"),
     prompt: str = Form(...),
+    negative_prompt: str = Form(" "),
     korean_prompt: str = Form(""),
-    steps: int = Form(50),
-    guidance_scale: float = Form(4.5),
+    steps: int = Form(20),
+    true_cfg_scale: float = Form(4.0),
+    guidance_scale: float = Form(1.0),
     seed: int = Form(-1),
     num_images: int = Form(1),
     auto_translate: str = Form("true"),
-    reference_image: Optional[UploadFile] = File(None),
     api_key: Optional[str] = Depends(get_api_key_auth)
 ):
-    """이미지 편집 실행"""
+    """이미지 편집 실행 (Qwen - 1~3장 이미지 입력 지원)"""
     update_edit_activity()
     
     # API 키 또는 세션 인증 확인 (Swagger docs의 Authorize 버튼 또는 헤더에서)
@@ -3096,7 +3079,7 @@ async def edit_image(
         data_id = session.data_id
     
     # 편집 모델이 로드되지 않았으면 자동 로드
-    if not longcat_edit_manager.is_loaded:
+    if not qwen_edit_manager.is_loaded:
         success, message = await ensure_edit_model_loaded(data_id if use_websocket else None)
         if not success:
             raise HTTPException(400, f"편집 모델 자동 로드 실패: {message}")
@@ -3118,28 +3101,23 @@ async def edit_image(
             outputs_dir = OUTPUTS_DIR / data_id
         outputs_dir.mkdir(parents=True, exist_ok=True)
         
-        # 이미지 로드
-        image_data = await image.read()
-        pil_image = Image.open(BytesIO(image_data)).convert("RGB")
+        # 이미지 로드 (1~3장)
+        if len(images) > 3:
+            raise HTTPException(400, "최대 3장의 이미지만 업로드할 수 있습니다.")
         
-        # 업로드된 원본 이미지를 출력 폴더에 저장 (편집기록에서 원본 확인용)
-        original_filename = f"edit_input_{run_id}.png"
-        original_output_path = outputs_dir / original_filename
-        pil_image.save(original_output_path, format="PNG")
-        original_image_url = f"/outputs/{data_id}/{original_filename}"
+        pil_images = []
+        original_image_urls = []
         
-        # 참조 이미지 로드 (있으면)
-        ref_image = None
-        reference_image_url = None
-        if reference_image:
-            ref_data = await reference_image.read()
-            ref_image = Image.open(BytesIO(ref_data)).convert("RGB")
+        for idx, img_file in enumerate(images):
+            image_data = await img_file.read()
+            pil_image = Image.open(BytesIO(image_data)).convert("RGB")
+            pil_images.append(pil_image)
             
-            # 참조 이미지도 저장 (추후 편집기록 확장/디버깅용)
-            reference_filename = f"edit_reference_{run_id}.png"
-            reference_output_path = outputs_dir / reference_filename
-            ref_image.save(reference_output_path, format="PNG")
-            reference_image_url = f"/outputs/{data_id}/{reference_filename}"
+            # 업로드된 원본 이미지를 출력 폴더에 저장 (편집기록에서 원본 확인용)
+            original_filename = f"edit_input_{run_id}_{idx+1}.png"
+            original_output_path = outputs_dir / original_filename
+            pil_image.save(original_output_path, format="PNG")
+            original_image_urls.append(f"/outputs/{data_id}/{original_filename}")
         
         # 프롬프트 번역
         final_prompt = prompt
@@ -3190,15 +3168,16 @@ async def edit_image(
                 "content": message
             })
         
-        # 편집 실행
-        success, results, message = await longcat_edit_manager.edit_image(
-            image=pil_image,
+        # 편집 실행 (Qwen)
+        success, results, message = await qwen_edit_manager.edit_image(
+            images=pil_images,
             prompt=final_prompt,
+            negative_prompt=negative_prompt,
             num_inference_steps=steps,
+            true_cfg_scale=true_cfg_scale,
             guidance_scale=guidance_scale,
             seed=seed,
             num_images=num_images,
-            reference_image=ref_image,
             progress_callback=edit_progress_callback,
             status_callback=edit_status_callback
         )
@@ -3231,7 +3210,7 @@ async def edit_image(
                 height=result_image.height,
                 steps=steps,
                 guidance_scale=guidance_scale,
-                model="LongCat-Image-Edit",
+                model="Qwen-Image-Edit",
             )
             ImageMetadata.save_with_metadata(result_image, output_path, metadata)
             
@@ -3247,14 +3226,15 @@ async def edit_image(
         edit_history_mgr = get_edit_history_manager_sync(data_id)
         history_entry = edit_history_mgr.add(
             prompt=final_prompt,
+            negative_prompt=negative_prompt,
             korean_prompt=korean_prompt,
             settings={
                 "steps": steps,
+                "true_cfg_scale": true_cfg_scale,
                 "guidance_scale": guidance_scale,
                 "seed": results[0]["seed"] if results else -1,
             },
-            original_image_path=original_image_url,
-            reference_image_path=reference_image_url,
+            original_image_paths=original_image_urls,
             result_image_paths=[img["path"] for img in images_response]
         )
         

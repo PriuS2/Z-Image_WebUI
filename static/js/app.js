@@ -211,11 +211,19 @@ function handleEditProgress(data) {
 // ============= 편집 결과 처리 =============
 function handleEditResult(data) {
     if (data.images && data.images.length > 0) {
-        // 원본 이미지 src 가져오기
-        const originalImg = document.getElementById('editPreviewImage');
-        const originalSrc = originalImg ? originalImg.src : '';
+        // 원본 이미지들 src 가져오기 (멀티 이미지)
+        const originalSrcs = [];
+        for (let i = 0; i < 3; i++) {
+            const slot = document.getElementById(`editImageSlot${i}`);
+            if (slot) {
+                const img = slot.querySelector('img');
+                if (img && img.src && editImageFiles[i]) {
+                    originalSrcs.push(img.src);
+                }
+            }
+        }
         
-        addEditImageMessage(originalSrc, data.images, data.prompt);
+        addEditImageMessage(originalSrcs, data.images, data.prompt);
     }
     
     hideEditProgress();
@@ -1860,8 +1868,13 @@ function selectImageFromGallery(imagePath) {
 }
 
 // 이미지를 편집 탭에 로드
-async function loadImageToEditTab(imagePath) {
+async function loadImageToEditTab(imagePath, slotIndex = 0) {
     try {
+        // 기존 이미지 초기화 (첫 번째 슬롯에 로드하는 경우)
+        if (slotIndex === 0) {
+            clearAllEditImages();
+        }
+        
         // 이미지를 fetch하여 File 객체로 변환
         const response = await fetch(imagePath);
         const blob = await response.blob();
@@ -1872,23 +1885,17 @@ async function loadImageToEditTab(imagePath) {
                 filename = last.split('?')[0] || 'image.png';
             }
         }
-        editImageFile = new File([blob], filename, { type: blob.type || 'image/png' });
+        const file = new File([blob], filename, { type: blob.type || 'image/png' });
         
-        // 미리보기 표시
-        const preview = document.getElementById('editUploadPreview');
-        const placeholder = document.getElementById('editUploadPlaceholder');
-        const img = document.getElementById('editPreviewImage');
-        
-        img.src = imagePath;
-        preview.style.display = 'block';
-        placeholder.style.display = 'none';
-        
+        // 멀티 이미지 슬롯에 로드
+        handleEditImageSlotUpload(slotIndex, file);
+
         addEditMessage('system', '✅ 이미지가 로드되었습니다. 편집 지시어를 입력하세요.');
 
         // 바로 이어서 입력할 수 있게 포커스
         const koreanInput = document.getElementById('editKoreanInput');
         if (koreanInput) koreanInput.focus();
-        
+
     } catch (error) {
         console.error('이미지 로드 실패:', error);
         addEditMessage('system', `❌ 이미지 로드 실패: ${error.message}`);
@@ -2534,7 +2541,6 @@ function switchTab(tabId) {
         loadAdminGpuPanel();
     }
     if (tabId === 'edit-history') loadEditHistory();
-    if (tabId === 'edit') loadEditQuantizationOptions();
 }
 
 // ============= 이미지 미리보기 (줌/드래그/네비게이션 지원) =============
@@ -3011,8 +3017,6 @@ document.addEventListener('DOMContentLoaded', () => {
     updateModelStatus();
     loadTemplates();
     loadQuantizationOptions();
-    // 설정 탭에서도 편집 모델 양자화 옵션을 로드하여 저장값을 즉시 반영
-    loadEditQuantizationOptions();
     loadLlmProviders();
     loadAutoUnloadSettings();
     
@@ -3342,102 +3346,75 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============= 편집 탭 관련 변수 =============
 let isEditModelLoading = false;
 let isEditing = false;
-let editImageFile = null;
-let referenceImageFile = null;
+let editImageFiles = [null, null, null];  // Qwen: 최대 3장의 이미지
 
 
 // ============= 편집 탭 초기화 =============
 function initEditTab() {
-    // 이미지 업로드 영역
-    const editImageUpload = document.getElementById('editImageUpload');
+    // 멀티 이미지 슬롯 초기화 (Qwen: 최대 3장)
     const editImageInput = document.getElementById('editImageInput');
-    const referenceImageBox = document.getElementById('referenceImageBox');
-    const referenceImageInput = document.getElementById('referenceImageInput');
+    const imageSlots = document.querySelectorAll('.image-slot');
     
-    // 메인 이미지 업로드
-    if (editImageUpload) {
-        editImageUpload.addEventListener('click', (e) => {
-            if (!e.target.closest('.btn') && !e.target.closest('.upload-preview')) {
+    // 각 슬롯에 클릭 이벤트 추가
+    imageSlots.forEach((slot, index) => {
+        slot.addEventListener('click', (e) => {
+            if (e.target.closest('.btn-remove-slot')) {
+                // 제거 버튼 클릭
+                removeEditImageSlot(index);
+            } else if (!e.target.closest('.upload-preview')) {
+                // 슬롯 클릭 시 파일 선택
+                editImageInput.dataset.targetSlot = index;
                 editImageInput.click();
             }
         });
         
-        editImageUpload.addEventListener('dragover', (e) => {
+        // 드래그 앤 드롭
+        slot.addEventListener('dragover', (e) => {
             e.preventDefault();
-            editImageUpload.classList.add('dragover');
+            slot.classList.add('dragover');
         });
         
-        editImageUpload.addEventListener('dragleave', () => {
-            editImageUpload.classList.remove('dragover');
+        slot.addEventListener('dragleave', () => {
+            slot.classList.remove('dragover');
         });
         
-        editImageUpload.addEventListener('drop', (e) => {
+        slot.addEventListener('drop', (e) => {
             e.preventDefault();
-            editImageUpload.classList.remove('dragover');
+            slot.classList.remove('dragover');
             if (e.dataTransfer.files.length > 0) {
-                handleEditImageUpload(e.dataTransfer.files[0]);
+                handleEditImageSlotUpload(index, e.dataTransfer.files[0]);
             }
         });
-    }
+    });
     
+    // 파일 입력 핸들러 (멀티 선택 지원)
     if (editImageInput) {
         editImageInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                handleEditImageUpload(e.target.files[0]);
-            }
+            const files = Array.from(e.target.files);
+            if (files.length === 0) return;
+            
+            const targetSlot = parseInt(editImageInput.dataset.targetSlot) || 0;
+            
+            // 멀티 파일 업로드 시
+            files.forEach((file, i) => {
+                const slotIndex = targetSlot + i;
+                if (slotIndex < 3) {
+                    handleEditImageSlotUpload(slotIndex, file);
+                }
+            });
+            
+            // 입력 초기화
+            editImageInput.value = '';
+            delete editImageInput.dataset.targetSlot;
         });
     }
     
-    // 참조 이미지 업로드
-    if (referenceImageBox) {
-        referenceImageBox.addEventListener('click', (e) => {
-            if (!e.target.closest('.btn') && !e.target.closest('.upload-preview')) {
-                referenceImageInput.click();
-            }
-        });
-        
-        referenceImageBox.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            referenceImageBox.classList.add('dragover');
-        });
-        
-        referenceImageBox.addEventListener('dragleave', () => {
-            referenceImageBox.classList.remove('dragover');
-        });
-        
-        referenceImageBox.addEventListener('drop', (e) => {
-            e.preventDefault();
-            referenceImageBox.classList.remove('dragover');
-            if (e.dataTransfer.files.length > 0) {
-                handleReferenceImageUpload(e.dataTransfer.files[0]);
-            }
-        });
+    // Negative prompt 번역 버튼
+    const btnTranslateNegative = document.getElementById('btnEditTranslateNegative');
+    if (btnTranslateNegative) {
+        btnTranslateNegative.addEventListener('click', translateEditNegativePrompt);
     }
     
-    if (referenceImageInput) {
-        referenceImageInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                handleReferenceImageUpload(e.target.files[0]);
-            }
-        });
-    }
-    
-    // 이미지 제거 버튼
-    const btnRemoveEditImage = document.getElementById('btnRemoveEditImage');
-    if (btnRemoveEditImage) {
-        btnRemoveEditImage.addEventListener('click', (e) => {
-            e.stopPropagation();
-            removeEditImage();
-        });
-    }
-    
-    const btnRemoveRefImage = document.getElementById('btnRemoveRefImage');
-    if (btnRemoveRefImage) {
-        btnRemoveRefImage.addEventListener('click', (e) => {
-            e.stopPropagation();
-            removeReferenceImage();
-        });
-    }
     
     // 모델 로드/언로드
     const btnEditLoadModel = document.getElementById('btnEditLoadModel');
@@ -3503,8 +3480,6 @@ function initEditTab() {
         });
     }
     
-    // 양자화 옵션 로드
-    loadEditQuantizationOptions();
     
     // 갤러리에서 선택 버튼
     const btnSelectFromGallery = document.getElementById('btnSelectFromGallery');
@@ -3517,71 +3492,93 @@ function initEditTab() {
 }
 
 
-// ============= 이미지 업로드 처리 =============
-function handleEditImageUpload(file) {
+// ============= 멀티 이미지 업로드 처리 (Qwen: 최대 3장) =============
+function handleEditImageSlotUpload(slotIndex, file) {
     if (!file.type.startsWith('image/')) {
         addEditMessage('system', '❌ 이미지 파일만 업로드할 수 있습니다.');
         return;
     }
     
-    editImageFile = file;
+    if (slotIndex < 0 || slotIndex > 2) return;
+    
+    editImageFiles[slotIndex] = file;
     
     const reader = new FileReader();
     reader.onload = (e) => {
-        const preview = document.getElementById('editUploadPreview');
-        const placeholder = document.getElementById('editUploadPlaceholder');
-        const img = document.getElementById('editPreviewImage');
+        const slot = document.getElementById(`editImageSlot${slotIndex}`);
+        if (!slot) return;
         
-        img.src = e.target.result;
-        preview.style.display = 'block';
-        placeholder.style.display = 'none';
+        const preview = slot.querySelector('.upload-preview');
+        const placeholder = slot.querySelector('.upload-placeholder');
+        const img = slot.querySelector('img');
+        
+        if (img) img.src = e.target.result;
+        if (preview) preview.style.display = 'block';
+        if (placeholder) placeholder.style.display = 'none';
     };
     reader.readAsDataURL(file);
 }
 
-function handleReferenceImageUpload(file) {
-    if (!file.type.startsWith('image/')) {
-        addEditMessage('system', '❌ 이미지 파일만 업로드할 수 있습니다.');
+function removeEditImageSlot(slotIndex) {
+    if (slotIndex < 0 || slotIndex > 2) return;
+    
+    editImageFiles[slotIndex] = null;
+    
+    const slot = document.getElementById(`editImageSlot${slotIndex}`);
+    if (!slot) return;
+    
+    const preview = slot.querySelector('.upload-preview');
+    const placeholder = slot.querySelector('.upload-placeholder');
+    const img = slot.querySelector('img');
+    
+    if (img) img.src = '';
+    if (preview) preview.style.display = 'none';
+    if (placeholder) placeholder.style.display = 'flex';
+}
+
+function getUploadedEditImages() {
+    // 업로드된 이미지만 필터링
+    return editImageFiles.filter(f => f !== null);
+}
+
+function clearAllEditImages() {
+    for (let i = 0; i < 3; i++) {
+        removeEditImageSlot(i);
+    }
+}
+
+// Negative prompt 번역
+async function translateEditNegativePrompt() {
+    const negativeInput = document.getElementById('editNegativePrompt');
+    if (!negativeInput) return;
+    
+    const text = negativeInput.value.trim();
+    if (!text) {
+        addEditMessage('system', '❌ 번역할 Negative Prompt를 입력해주세요.');
         return;
     }
     
-    referenceImageFile = file;
-    
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        const preview = document.getElementById('referencePreview');
-        const placeholder = document.getElementById('referencePlaceholder');
-        const img = document.getElementById('referencePreviewImage');
+    try {
+        addEditMessage('system', '🌐 Negative Prompt 번역 중...');
         
-        img.src = e.target.result;
-        preview.style.display = 'block';
-        placeholder.style.display = 'none';
-    };
-    reader.readAsDataURL(file);
-}
-
-function removeEditImage() {
-    editImageFile = null;
-    
-    const preview = document.getElementById('editUploadPreview');
-    const placeholder = document.getElementById('editUploadPlaceholder');
-    const input = document.getElementById('editImageInput');
-    
-    preview.style.display = 'none';
-    placeholder.style.display = 'flex';
-    input.value = '';
-}
-
-function removeReferenceImage() {
-    referenceImageFile = null;
-    
-    const preview = document.getElementById('referencePreview');
-    const placeholder = document.getElementById('referencePlaceholder');
-    const input = document.getElementById('referenceImageInput');
-    
-    preview.style.display = 'none';
-    placeholder.style.display = 'flex';
-    input.value = '';
+        const response = await fetch('/api/edit/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.translated) {
+            negativeInput.value = data.translated;
+            addEditMessage('system', `✅ 번역 완료: ${data.translated}`);
+        } else {
+            addEditMessage('system', `⚠️ 번역 실패: ${data.message || '알 수 없는 오류'}`);
+        }
+    } catch (error) {
+        console.error('Negative prompt 번역 오류:', error);
+        addEditMessage('system', '❌ 번역 중 오류가 발생했습니다.');
+    }
 }
 
 
@@ -3592,18 +3589,16 @@ async function loadEditModel() {
         return;
     }
     
-    // 편집 모델 양자화/CPU 오프로딩 설정은 설정 탭에서만 관리
-    const quantization = document.getElementById('editQuantizationSelectSettings')?.value || "BF16 (기본, 최고품질)";
+    // Qwen은 4bit NF4 고정, CPU 오프로딩만 설정 가능
     const cpuOffload = document.getElementById('editCpuOffloadCheckSettings')?.checked ?? true;
     
     try {
         // 관리자가 편집 모델을 로드하는 경우, 현재 선택값을 먼저 서버 설정에 저장해둔다.
-        // (새로고침/재시작 후에도 동일 설정이 유지되도록 보장)
         if (isAdmin) {
             await saveModelSettings();
         }
         setEditModelLoadingState(true);
-        addEditMessage('system', '🔄 편집 모델 로딩을 시작합니다...');
+        addEditMessage('system', '🔄 Qwen-Image-Edit 모델 로딩을 시작합니다...');
         showEditProgress('모델 로딩 준비 중...', 5);
 
         const targetDevice = isAdmin ? (adminGpuSettings.edit_gpu || 'auto') : 'auto';
@@ -3735,15 +3730,18 @@ async function executeEdit() {
         addEditMessage('system', '⚠️ 이미 편집 중입니다.');
         return;
     }
-    
-    if (!editImageFile) {
-        addEditMessage('system', '❌ 편집할 이미지를 업로드해주세요.');
+
+    // 업로드된 이미지 확인 (Qwen: 최소 1장 필수)
+    const uploadedImages = getUploadedEditImages();
+    if (uploadedImages.length === 0) {
+        addEditMessage('system', '❌ 편집할 이미지를 최소 1장 업로드해주세요.');
         return;
     }
-    
+
     const koreanText = document.getElementById('editKoreanInput')?.value?.trim() || '';
     let prompt = document.getElementById('editPromptInput')?.value?.trim() || '';
-    
+    const negativePrompt = document.getElementById('editNegativePrompt')?.value?.trim() || ' ';
+
     // 한국어가 있고 영어가 없으면 번역
     if (koreanText && !prompt) {
         addEditMessage('system', '🌐 번역 후 편집합니다...');
@@ -3754,35 +3752,39 @@ async function executeEdit() {
         }
         prompt = document.getElementById('editPromptInput')?.value?.trim() || '';
     }
-    
+
     if (!prompt) {
         addEditMessage('system', '❌ 편집 프롬프트를 입력해주세요.');
         return;
     }
-    
+
     isEditing = true;
     setEditButtonState(true);
-    
+
     // 사용자 메시지 표시
     const displayPrompt = koreanText ? `🇰🇷 ${koreanText}\n🇺🇸 ${prompt}` : prompt;
     addEditMessage('user', displayPrompt);
-    
+    if (negativePrompt.trim()) {
+        addEditMessage('system', `🚫 Negative: ${negativePrompt}`);
+    }
+
     // 진행률 표시 시작
     showEditProgress('편집 준비 중...', 0);
-    
+
     const formData = new FormData();
-    formData.append('image', editImageFile);
+    // 멀티 이미지 추가 (Qwen: 1~3장)
+    uploadedImages.forEach(file => {
+        formData.append('images', file);
+    });
     formData.append('prompt', prompt);
+    formData.append('negative_prompt', negativePrompt);
     formData.append('korean_prompt', koreanText);
-    formData.append('steps', document.getElementById('editStepsInput')?.value || '50');
-    formData.append('guidance_scale', document.getElementById('editGuidanceInput')?.value || '4.5');
+    formData.append('steps', document.getElementById('editStepsInput')?.value || '20');
+    formData.append('true_cfg_scale', document.getElementById('editTrueCfgInput')?.value || '4.0');
+    formData.append('guidance_scale', '1.0');  // Qwen 기본값
     formData.append('seed', document.getElementById('editSeedInput')?.value || '-1');
     formData.append('num_images', document.getElementById('editNumImagesInput')?.value || '1');
     formData.append('auto_translate', 'false');  // 이미 번역했으므로
-    
-    if (referenceImageFile) {
-        formData.append('reference_image', referenceImageFile);
-    }
     
     try {
         const response = await fetch('/api/edit/generate', {
@@ -4028,9 +4030,12 @@ function addEditMessage(type, content, style = '') {
     messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function addEditImageMessage(originalSrc, resultImages, prompt) {
+function addEditImageMessage(originalSrcs, resultImages, prompt) {
     const messagesEl = document.getElementById('editMessages');
     if (!messagesEl) return;
+    
+    // originalSrcs가 배열이 아니면 배열로 변환 (하위 호환성)
+    const originals = Array.isArray(originalSrcs) ? originalSrcs : [originalSrcs];
     
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message assistant edit-result';
@@ -4038,9 +4043,9 @@ function addEditImageMessage(originalSrc, resultImages, prompt) {
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     
-    // 이미지 목록 생성 (원본 + 결과들)
+    // 이미지 목록 생성 (원본들 + 결과들)
     const imageList = [
-        { path: originalSrc, metadata: { prompt: '원본 이미지' } },
+        ...originals.map((src, i) => ({ path: src, metadata: { prompt: `원본 이미지 ${i + 1}` } })),
         ...resultImages.map(img => ({
             path: img.base64 ? 'data:image/png;base64,' + img.base64 : img.path,
             metadata: { prompt: `편집 결과: ${prompt}`, seed: img.seed }
@@ -4051,30 +4056,32 @@ function addEditImageMessage(originalSrc, resultImages, prompt) {
     const comparisonDiv = document.createElement('div');
     comparisonDiv.className = 'edit-comparison';
     
-    // 원본 이미지
-    const originalWrapper = document.createElement('div');
-    originalWrapper.className = 'edit-result-image-wrapper';
+    // 원본 이미지들 (멀티 이미지 지원)
+    originals.forEach((src, i) => {
+        const originalWrapper = document.createElement('div');
+        originalWrapper.className = 'edit-result-image-wrapper';
 
-    const originalImg = document.createElement('img');
-    originalImg.src = originalSrc;
-    originalImg.alt = '원본';
-    originalImg.title = '원본 이미지 (클릭하여 확대)';
-    originalImg.onclick = () => showImageModalWithList(imageList, 0);
+        const originalImg = document.createElement('img');
+        originalImg.src = src;
+        originalImg.alt = `원본 ${i + 1}`;
+        originalImg.title = `원본 이미지 ${i + 1} (클릭하여 확대)`;
+        originalImg.onclick = () => showImageModalWithList(imageList, i);
 
-    const originalContinueBtn = document.createElement('button');
-    originalContinueBtn.type = 'button';
-    originalContinueBtn.className = 'continue-edit-btn';
-    originalContinueBtn.title = '이 이미지를 입력 이미지로 넣고 이어서 편집';
-    originalContinueBtn.innerHTML = '<i class="ri-add-line"></i> 이어서 편집';
-    originalContinueBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        continueEditFromMessageImage(originalImg.src);
+        const originalContinueBtn = document.createElement('button');
+        originalContinueBtn.type = 'button';
+        originalContinueBtn.className = 'continue-edit-btn';
+        originalContinueBtn.title = '이 이미지를 입력 이미지로 넣고 이어서 편집';
+        originalContinueBtn.innerHTML = '<i class="ri-add-line"></i> 이어서 편집';
+        originalContinueBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            continueEditFromMessageImage(originalImg.src);
+        });
+
+        originalWrapper.appendChild(originalImg);
+        originalWrapper.appendChild(originalContinueBtn);
+        comparisonDiv.appendChild(originalWrapper);
     });
-
-    originalWrapper.appendChild(originalImg);
-    originalWrapper.appendChild(originalContinueBtn);
-    comparisonDiv.appendChild(originalWrapper);
     
     // 화살표
     const arrow = document.createElement('span');
@@ -4091,7 +4098,7 @@ function addEditImageMessage(originalSrc, resultImages, prompt) {
         resultImg.src = img.base64 ? 'data:image/png;base64,' + img.base64 : img.path;
         resultImg.alt = '결과';
         resultImg.title = `시드: ${img.seed}\n클릭하여 확대 (좌우 화살표로 탐색)`;
-        resultImg.onclick = () => showImageModalWithList(imageList, index + 1);
+        resultImg.onclick = () => showImageModalWithList(imageList, originals.length + index);
 
         const continueBtn = document.createElement('button');
         continueBtn.type = 'button';
@@ -4150,40 +4157,20 @@ function hideEditProgress() {
 }
 
 
-// ============= 편집 양자화 옵션 로드 =============
-async function loadEditQuantizationOptions() {
+// ============= 편집 모델 상태 로드 (Qwen: 양자화 고정) =============
+async function loadEditModelStatus() {
     try {
         const result = await apiCall('/edit/status');
-        const settingsSelect = document.getElementById('editQuantizationSelectSettings');
         const editCpuOffloadCheckSettings = document.getElementById('editCpuOffloadCheckSettings');
         
-        if (result.quantization_options && settingsSelect) {
-            settingsSelect.innerHTML = '';
-            result.quantization_options.forEach(option => {
-                const opt = document.createElement('option');
-                opt.value = option;
-                opt.textContent = option;
-                settingsSelect.appendChild(opt);
-            });
-        }
-
-        // 저장된 편집 모델 설정값 반영
-        // - 우선순위: /settings에서 내려온 값(pending) > /edit/status에서 내려온 저장값
-        if (settingsSelect) {
-            const desiredQuant = pendingEditQuantizationValue || result?.saved_edit_quantization;
-            if (desiredQuant && Array.from(settingsSelect.options).some(o => o.value === desiredQuant)) {
-                settingsSelect.value = desiredQuant;
-                if (pendingEditQuantizationValue) pendingEditQuantizationValue = null;
-            }
-        }
-
+        // CPU 오프로딩 설정 반영
         if (editCpuOffloadCheckSettings && typeof result?.saved_edit_cpu_offload === 'boolean') {
             editCpuOffloadCheckSettings.checked = result.saved_edit_cpu_offload;
         }
         
         updateEditModelStatusFromData(result);
     } catch (error) {
-        console.error('편집 양자화 옵션 로드 실패:', error);
+        console.error('편집 모델 상태 로드 실패:', error);
     }
 }
 
@@ -4201,21 +4188,32 @@ async function loadEditHistory() {
             const item = document.createElement('div');
             item.className = 'edit-history-item';
             
-            // 이미지에 클릭 이벤트를 위해 데이터 저장
-            const originalPath = entry.original_image_path || '';
-            const resultPath = (entry.result_image_paths && entry.result_image_paths.length > 0) ? entry.result_image_paths[0] : '';
+            // 원본 이미지 경로들 (Qwen: 1~3장)
+            const originalPaths = entry.original_image_paths || 
+                (entry.original_image_path ? [entry.original_image_path] : []);
+            const resultPaths = entry.result_image_paths || [];
             
+            // 이미지 HTML 생성
             let imagesHtml = '<div class="edit-history-images">';
-            if (originalPath) {
-                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${originalPath}" alt="원본" data-path="${originalPath}" data-type="original"></div>`;
+            
+            // 원본 이미지들
+            originalPaths.forEach((path, i) => {
+                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${path}" alt="원본 ${i + 1}" data-path="${path}" data-type="original" data-index="${i}"></div>`;
+            });
+            
+            // 화살표
+            if (originalPaths.length > 0 && resultPaths.length > 0) {
+                imagesHtml += '<span class="edit-history-arrow"><i class="ri-arrow-right-line"></i></span>';
             }
-            imagesHtml += '<span class="edit-history-arrow"><i class="ri-arrow-right-line"></i></span>';
-            if (resultPath) {
-                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${resultPath}" alt="결과" data-path="${resultPath}" data-type="result"></div>`;
+            
+            // 결과 이미지
+            if (resultPaths.length > 0) {
+                imagesHtml += `<div class="edit-history-image-wrapper"><img src="${resultPaths[0]}" alt="결과" data-path="${resultPaths[0]}" data-type="result"></div>`;
             }
             imagesHtml += '</div>';
             
             const hasKorean = entry.korean_prompt && entry.korean_prompt.trim();
+            const hasNegative = entry.negative_prompt && entry.negative_prompt.trim() && entry.negative_prompt.trim() !== ' ';
             const chainBadge = entry.parent_id ? '<div class="edit-history-chain-badge"><i class="ri-links-line"></i> 연속 편집</div>' : '';
             
             item.innerHTML = `
@@ -4231,30 +4229,37 @@ async function loadEditHistory() {
                 ${imagesHtml}
                 ${hasKorean ? `<div class="edit-history-item-prompt"><span class="lang-badge kr">🇰🇷</span> ${escapeHtml(entry.korean_prompt)}</div>` : ''}
                 <div class="edit-history-item-prompt"><span class="lang-badge us">🇺🇸</span> ${escapeHtml(entry.prompt)}</div>
+                ${hasNegative ? `<div class="edit-history-item-prompt negative"><span class="lang-badge neg">🚫</span> ${escapeHtml(entry.negative_prompt)}</div>` : ''}
                 ${chainBadge}
             `;
             
             // 이미지 목록 생성 (네비게이션용)
             const historyImageList = [];
-            if (originalPath) {
+            originalPaths.forEach((path, i) => {
                 historyImageList.push({
-                    path: originalPath,
-                    metadata: { prompt: `원본 이미지\n편집 프롬프트: ${entry.prompt}` }
+                    path: path,
+                    metadata: { prompt: `원본 이미지 ${i + 1}\n편집 프롬프트: ${entry.prompt}` }
                 });
-            }
-            if (resultPath) {
+            });
+            resultPaths.forEach((path, i) => {
                 historyImageList.push({
-                    path: resultPath,
-                    metadata: { prompt: `편집 결과\n편집 프롬프트: ${entry.prompt}`, seed: entry.settings?.seed }
+                    path: path,
+                    metadata: { prompt: `편집 결과 ${i + 1}\n편집 프롬프트: ${entry.prompt}`, seed: entry.settings?.seed }
                 });
-            }
+            });
             
             // 이미지 클릭 이벤트 추가
-            item.querySelectorAll('.edit-history-image-wrapper img').forEach((img, imgIndex) => {
+            item.querySelectorAll('.edit-history-image-wrapper img').forEach((img) => {
                 img.style.cursor = 'pointer';
                 img.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    const clickedIndex = img.dataset.type === 'original' ? 0 : (originalPath ? 1 : 0);
+                    const isOriginal = img.dataset.type === 'original';
+                    let clickedIndex = 0;
+                    if (isOriginal) {
+                        clickedIndex = parseInt(img.dataset.index) || 0;
+                    } else {
+                        clickedIndex = originalPaths.length;  // 결과 이미지는 원본들 다음
+                    }
                     showImageModalWithList(historyImageList, clickedIndex);
                 });
             });
@@ -4278,10 +4283,16 @@ async function useEditHistory(historyId) {
             koreanInput.value = entry.korean_prompt || '';
         }
         
-        // 설정 복원
+        // Negative prompt 복원
+        const negativeInput = document.getElementById('editNegativePrompt');
+        if (negativeInput) {
+            negativeInput.value = entry.negative_prompt || '';
+        }
+        
+        // 설정 복원 (Qwen 파라미터)
         if (entry.settings) {
             if (entry.settings.steps) document.getElementById('editStepsInput').value = entry.settings.steps;
-            if (entry.settings.guidance_scale) document.getElementById('editGuidanceInput').value = entry.settings.guidance_scale;
+            if (entry.settings.true_cfg_scale) document.getElementById('editTrueCfgInput').value = entry.settings.true_cfg_scale;
             if (entry.settings.seed) document.getElementById('editSeedInput').value = entry.settings.seed;
         }
         
@@ -4297,6 +4308,9 @@ async function continueEditHistory(historyId) {
         const result = await apiCall(`/edit/history/${historyId}`);
         const entry = result.history;
         
+        // 기존 이미지 초기화
+        clearAllEditImages();
+        
         // 결과 이미지를 새 편집의 입력으로 사용
         if (entry.result_image_paths && entry.result_image_paths.length > 0) {
             const imagePath = entry.result_image_paths[0];
@@ -4306,12 +4320,13 @@ async function continueEditHistory(historyId) {
             const blob = await response.blob();
             const file = new File([blob], 'continue_edit.png', { type: 'image/png' });
             
-            handleEditImageUpload(file);
+            handleEditImageSlotUpload(0, file);  // 첫 번째 슬롯에 로드
         }
         
         // 프롬프트 초기화
         document.getElementById('editKoreanInput').value = '';
         document.getElementById('editPromptInput').value = '';
+        document.getElementById('editNegativePrompt').value = '';
         
         switchTab('edit');
         addEditMessage('system', '✅ 이전 편집 결과 이미지가 로드되었습니다. 새 편집 지시어를 입력하세요.');

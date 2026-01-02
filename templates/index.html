@@ -242,46 +242,60 @@
                     <div class="chat-messages" id="editMessages">
                         <div class="message system">
                             <div class="message-content">
-                                <p>🎨 LongCat-Image-Edit에 오신 것을 환영합니다!</p>
-                                <p>이미지를 업로드하고 편집 지시어를 입력하세요.</p>
+                                <p>🎨 Qwen-Image-Edit에 오신 것을 환영합니다!</p>
+                                <p>이미지를 1~3장 업로드하고 편집 지시어를 입력하세요.</p>
                                 <p>위의 <strong>로드</strong> 버튼을 눌러 편집 모델을 먼저 로드해주세요.</p>
                             </div>
                         </div>
                     </div>
                     
                     <div class="chat-input-container edit-input-container">
-                        <!-- 이미지 업로드 영역 -->
-                        <div class="edit-image-area">
-                            <div class="image-upload-box" id="editImageUpload">
-                                <input type="file" id="editImageInput" accept="image/*" style="display: none;">
-                                <div class="upload-placeholder" id="editUploadPlaceholder">
+                        <!-- 멀티 이미지 업로드 영역 (최대 3장) -->
+                        <div class="edit-image-area multi-image-upload">
+                            <input type="file" id="editImageInput" accept="image/*" multiple style="display: none;">
+                            
+                            <div class="image-slot" data-slot="0" id="editImageSlot0">
+                                <div class="upload-placeholder">
                                     <i class="ri-upload-cloud-line"></i>
-                                    <span>이미지 업로드 또는 드래그</span>
-                                    <button class="btn btn-secondary btn-sm" id="btnSelectFromGallery">
-                                        <i class="ri-gallery-line"></i> 갤러리에서 선택
-                                    </button>
+                                    <span>이미지 1 (필수)</span>
                                 </div>
-                                <div class="upload-preview" id="editUploadPreview" style="display: none;">
-                                    <img id="editPreviewImage" src="" alt="편집할 이미지">
-                                    <button class="btn btn-xs btn-danger" id="btnRemoveEditImage" title="이미지 제거">
+                                <div class="upload-preview" style="display: none;">
+                                    <img src="" alt="이미지 1">
+                                    <button class="btn btn-xs btn-danger btn-remove-slot" title="이미지 제거">
                                         <i class="ri-close-line"></i>
                                     </button>
                                 </div>
                             </div>
                             
-                            <div class="reference-image-box" id="referenceImageBox">
-                                <input type="file" id="referenceImageInput" accept="image/*" style="display: none;">
-                                <div class="upload-placeholder" id="referencePlaceholder">
-                                    <i class="ri-image-add-line"></i>
-                                    <span>참조 이미지 (선택)</span>
+                            <div class="image-slot" data-slot="1" id="editImageSlot1">
+                                <div class="upload-placeholder">
+                                    <i class="ri-add-line"></i>
+                                    <span>이미지 2</span>
                                 </div>
-                                <div class="upload-preview" id="referencePreview" style="display: none;">
-                                    <img id="referencePreviewImage" src="" alt="참조 이미지">
-                                    <button class="btn btn-xs btn-danger" id="btnRemoveRefImage" title="참조 이미지 제거">
+                                <div class="upload-preview" style="display: none;">
+                                    <img src="" alt="이미지 2">
+                                    <button class="btn btn-xs btn-danger btn-remove-slot" title="이미지 제거">
                                         <i class="ri-close-line"></i>
                                     </button>
                                 </div>
                             </div>
+                            
+                            <div class="image-slot" data-slot="2" id="editImageSlot2">
+                                <div class="upload-placeholder">
+                                    <i class="ri-add-line"></i>
+                                    <span>이미지 3</span>
+                                </div>
+                                <div class="upload-preview" style="display: none;">
+                                    <img src="" alt="이미지 3">
+                                    <button class="btn btn-xs btn-danger btn-remove-slot" title="이미지 제거">
+                                        <i class="ri-close-line"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <button class="btn btn-secondary btn-sm btn-gallery-select" id="btnSelectFromGallery">
+                                <i class="ri-gallery-line"></i> 갤러리에서 선택
+                            </button>
                         </div>
                         
                         <div class="input-options">
@@ -316,15 +330,26 @@
                             <textarea id="editPromptInput" placeholder="예: Change the cat to a dog" rows="2"></textarea>
                         </div>
                         
+                        <div class="input-row negative-prompt-row">
+                            <div class="input-label">
+                                <i class="ri-subtract-line"></i>
+                                <span>Negative Prompt (제외할 요소)</span>
+                                <button class="btn btn-xs btn-secondary" id="btnEditTranslateNegative" title="한국어를 영어로 번역">
+                                    <i class="ri-translate-2"></i> 번역
+                                </button>
+                            </div>
+                            <textarea id="editNegativePrompt" placeholder="blurry, distorted, low quality, watermark..." rows="1"></textarea>
+                        </div>
+                        
                         <div class="input-actions">
                             <div class="quick-settings">
                                 <div class="setting-with-tooltip">
-                                    <input type="number" id="editStepsInput" placeholder="스텝" value="50" min="10" max="100" title="추론 스텝">
-                                    <span class="tooltip-icon" data-tooltip="스텝: 높을수록 품질↑ 속도↓. 기본 50, 범위 10-100">?</span>
+                                    <input type="number" id="editStepsInput" placeholder="스텝" value="20" min="10" max="50" title="추론 스텝">
+                                    <span class="tooltip-icon" data-tooltip="스텝: 10-50, 기본 20">?</span>
                                 </div>
                                 <div class="setting-with-tooltip">
-                                    <input type="number" id="editGuidanceInput" placeholder="가이던스" value="4.5" min="1" max="20" step="0.5" title="가이던스 스케일">
-                                    <span class="tooltip-icon" data-tooltip="가이던스: 프롬프트 반영 강도. 기본 4.5">?</span>
+                                    <input type="number" id="editTrueCfgInput" placeholder="True CFG" value="4.0" min="1" max="10" step="0.5" title="True CFG Scale">
+                                    <span class="tooltip-icon" data-tooltip="True CFG Scale: 프롬프트 충실도. 기본 4.0">?</span>
                                 </div>
                                 <div class="setting-with-tooltip">
                                     <input type="number" id="editSeedInput" placeholder="시드" value="-1" title="시드: -1=랜덤">
@@ -497,19 +522,17 @@
                 </div>
                 
                 <div class="settings-section">
-                    <h3>🎨 LongCat-Image-Edit 모델 설정 (관리자 설정)</h3>
-                    <p class="setting-description">양자화/CPU 오프로딩 옵션은 관리자만 변경할 수 있으며, 선택값은 서버에 저장됩니다.</p>
+                    <h3>🎨 Qwen-Image-Edit 모델 설정 (관리자 설정)</h3>
+                    <p class="setting-description">4bit NF4 양자화 (~16GB VRAM). CPU 오프로딩 옵션은 관리자만 변경할 수 있으며, 선택값은 서버에 저장됩니다.</p>
                     <div class="setting-group">
                         <label>양자화</label>
-                        <select id="editQuantizationSelectSettings">
-                            <option value="BF16 (기본, 최고품질)">BF16 (기본, 최고품질)</option>
-                            <!-- 서버에서 동적으로 옵션을 로드합니다 -->
-                        </select>
+                        <input type="text" value="NF4 (4bit) - 고정" disabled style="background: var(--bg-secondary); cursor: not-allowed;">
+                        <small class="setting-hint">Qwen-Image-Edit는 4bit NF4 양자화가 기본 적용되어 있습니다.</small>
                     </div>
                     <div class="setting-group">
                         <label>
                             <input type="checkbox" id="editCpuOffloadCheckSettings" checked>
-                            CPU 오프로딩 (권장, VRAM ~19GB 필요)
+                            CPU 오프로딩 (권장, VRAM ~16GB 필요)
                         </label>
                         <small class="setting-hint">편집 모델은 용량이 크므로 CPU 오프로딩을 권장합니다.</small>
                     </div>
@@ -546,7 +569,7 @@
                 </div>
                 
                 <div class="settings-section" id="editAutoUnloadSection">
-                    <h3>⏰ 자동 언로드 설정 (LongCat-Image-Edit)</h3>
+                    <h3>⏰ 자동 언로드 설정 (Qwen-Image-Edit)</h3>
                     <p class="setting-description">편집 모델의 자동 언로드 설정입니다. (관리자 전용)</p>
                     <div class="setting-group">
                         <label>
@@ -792,10 +815,10 @@
                             <span class="credit-desc">이미지 생성 모델</span>
                         </div>
                         <div class="credit-item">
-                            <a href="https://huggingface.co/meituan-longcat/LongCat-Image-Edit" target="_blank" rel="noopener noreferrer">
-                                <i class="ri-edit-line"></i> meituan-longcat/LongCat-Image-Edit
+                            <a href="https://huggingface.co/ovedrive/Qwen-Image-Edit-2511-4bit" target="_blank" rel="noopener noreferrer">
+                                <i class="ri-edit-line"></i> ovedrive/Qwen-Image-Edit-2511-4bit
                             </a>
-                            <span class="credit-desc">이미지 편집 모델</span>
+                            <span class="credit-desc">이미지 편집 모델 (4bit 양자화)</span>
                         </div>
                         <div class="credit-item">
                             <a href="https://huggingface.co/jayn7/Z-Image-Turbo-GGUF" target="_blank" rel="noopener noreferrer">

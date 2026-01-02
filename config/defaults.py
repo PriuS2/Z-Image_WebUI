@@ -20,9 +20,9 @@ RELOAD=false
 DEFAULT_MODEL=Tongyi-MAI/Z-Image-Turbo
 GGUF_MODEL_REPO=jayn7/Z-Image-Turbo-GGUF
 
-# ===== LongCat-Image-Edit Model Settings =====
-LONGCAT_EDIT_MODEL=meituan-longcat/LongCat-Image-Edit
-LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT=10
+# ===== Qwen-Image-Edit Model Settings =====
+QWEN_EDIT_MODEL=ovedrive/Qwen-Image-Edit-2511-4bit
+QWEN_EDIT_AUTO_UNLOAD_TIMEOUT=10
 
 # ===== LLM Settings =====
 # Provider: openai, groq, openrouter, together, ollama, lmstudio, custom
@@ -75,9 +75,9 @@ MODELS_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "Tongyi-MAI/Z-Image-Turbo")
 GGUF_MODEL_REPO = os.getenv("GGUF_MODEL_REPO", "jayn7/Z-Image-Turbo-GGUF")
 
-# ===== LongCat-Image-Edit 모델 설정 =====
-LONGCAT_EDIT_MODEL = os.getenv("LONGCAT_EDIT_MODEL", "meituan-longcat/LongCat-Image-Edit")
-LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT = int(os.getenv("LONGCAT_EDIT_AUTO_UNLOAD_TIMEOUT", "10"))
+# ===== Qwen-Image-Edit 모델 설정 =====
+QWEN_EDIT_MODEL = os.getenv("QWEN_EDIT_MODEL", "ovedrive/Qwen-Image-Edit-2511-4bit")
+QWEN_EDIT_AUTO_UNLOAD_TIMEOUT = int(os.getenv("QWEN_EDIT_AUTO_UNLOAD_TIMEOUT", "10"))
 
 # ===== LLM 설정 (환경변수 우선) =====
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")  # 빈 문자열이면 settings.yaml 사용
@@ -161,36 +161,18 @@ DEFAULT_GENERATION_SETTINGS = {
     "seed": -1,  # -1 = 랜덤
 }
 
-# LongCat-Image-Edit 모델 옵션
-# 양자화 옵션: bf16 (기본), int8 (bitsandbytes 8bit), int4 (bitsandbytes 4bit)
-EDIT_QUANTIZATION_OPTIONS = {
-    "BF16 (기본, 최고품질)": {
-        "type": "bf16",
-        "repo": LONGCAT_EDIT_MODEL,
-        "quantization": None,
-        "estimated_vram": "~20-24GB",
-    },
-    "INT8 (절반 용량, 고품질)": {
-        "type": "int8",
-        "repo": LONGCAT_EDIT_MODEL,
-        "quantization": "int8",
-        "estimated_vram": "~12-14GB",
-    },
-    "INT4 (1/4 용량, 균형)": {
-        "type": "int4",
-        "repo": LONGCAT_EDIT_MODEL,
-        "quantization": "int4",
-        "estimated_vram": "~8-10GB",
-    },
-}
-
-# 이미지 편집 기본값
-DEFAULT_EDIT_SETTINGS = {
-    "num_inference_steps": 50,
-    "guidance_scale": 4.5,
+# Qwen-Image-Edit 기본값
+DEFAULT_QWEN_EDIT_SETTINGS = {
+    "num_inference_steps": 20,
+    "true_cfg_scale": 4.0,
+    "guidance_scale": 1.0,
+    "negative_prompt": " ",
     "num_images": 1,
     "seed": -1,  # -1 = 랜덤
 }
+
+# Qwen 편집 모델 VRAM 사용량 (CPU Offload 기준)
+QWEN_EDIT_MODEL_VRAM = 16.0  # ~16GB with CPU offload
 
 # 해상도 프리셋
 RESOLUTION_PRESETS = {
