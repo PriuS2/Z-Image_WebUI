@@ -2245,6 +2245,15 @@ body {
     opacity: 1;
 }
 
+/* 이미지가 없을 때 제거 버튼 숨김 */
+.slot-buttons .btn-remove-slot {
+    display: none;
+}
+
+.slot-buttons .btn-remove-slot.visible {
+    display: inline-flex;
+}
+
 /* 갤러리 선택 버튼 (각 슬롯) */
 .btn-gallery-slot {
     background: var(--accent);
@@ -2263,13 +2272,6 @@ body {
     opacity: 1;
 }
 
-/* placeholder 내 갤러리 버튼 */
-.upload-placeholder .btn-gallery-slot {
-    position: absolute;
-    bottom: 6px;
-    right: 6px;
-    margin-top: 0;
-}
 
 /* 편집 히스토리 리스트 */
 .edit-history-list {

@@ -3385,13 +3385,16 @@ function initEditTab() {
         slot.addEventListener('click', (e) => {
             if (e.target.closest('.btn-remove-slot')) {
                 // 제거 버튼 클릭
-                removeEditImageSlot(index);
+                e.stopPropagation();
+                const slotIdx = parseInt(e.target.closest('.btn-remove-slot').dataset.slot);
+                removeEditImageSlot(slotIdx);
             } else if (e.target.closest('.btn-gallery-slot')) {
                 // 갤러리에서 선택 버튼 클릭
+                e.stopPropagation();
                 const slotIndex = parseInt(e.target.closest('.btn-gallery-slot').dataset.slot);
                 openGallerySelectModal(slotIndex);
-            } else if (!e.target.closest('.upload-preview') && !e.target.closest('.btn-gallery-slot')) {
-                // 슬롯 클릭 시 파일 선택 (버튼이 아닌 경우에만)
+            } else if (!e.target.closest('.slot-buttons')) {
+                // 슬롯 클릭 시 파일 선택 (버튼 영역이 아닌 경우에만)
                 editImageInput.dataset.targetSlot = index;
                 editImageInput.click();
             }
@@ -3532,10 +3535,12 @@ function handleEditImageSlotUpload(slotIndex, file) {
         const preview = slot.querySelector('.upload-preview');
         const placeholder = slot.querySelector('.upload-placeholder');
         const img = slot.querySelector('img');
+        const removeBtn = slot.querySelector('.btn-remove-slot');
         
         if (img) img.src = e.target.result;
         if (preview) preview.style.display = 'block';
         if (placeholder) placeholder.style.display = 'none';
+        if (removeBtn) removeBtn.classList.add('visible');
     };
     reader.readAsDataURL(file);
 }
@@ -3551,10 +3556,12 @@ function removeEditImageSlot(slotIndex) {
     const preview = slot.querySelector('.upload-preview');
     const placeholder = slot.querySelector('.upload-placeholder');
     const img = slot.querySelector('img');
+    const removeBtn = slot.querySelector('.btn-remove-slot');
     
     if (img) img.src = '';
     if (preview) preview.style.display = 'none';
     if (placeholder) placeholder.style.display = 'flex';
+    if (removeBtn) removeBtn.classList.remove('visible');
 }
 
 function getUploadedEditImages() {
