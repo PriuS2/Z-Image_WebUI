@@ -26,12 +26,20 @@ const koreanInput = document.getElementById('koreanInput');
 const modelStatus = document.getElementById('modelStatus');
 
 // ============= WebSocket 연결 =============
+let wsAuthRejected = false;  // 인증 거부 플래그
+
 function connectWebSocket() {
+    // 인증 거부된 상태면 재연결 시도 안 함
+    if (wsAuthRejected) {
+        return;
+    }
+    
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
     
     ws.onopen = () => {
         console.log('WebSocket 연결됨');
+        wsAuthRejected = false;  // 연결 성공 시 플래그 초기화
         // 핑 전송 시작 (연결 유지)
         startPing();
     };
@@ -41,9 +49,18 @@ function connectWebSocket() {
         handleWebSocketMessage(data);
     };
     
-    ws.onclose = () => {
-        console.log('WebSocket 연결 끊김, 재연결 시도...');
+    ws.onclose = (event) => {
+        console.log('WebSocket 연결 끊김, 코드:', event.code);
         stopPing();
+        
+        // 인증 거부 (4001)면 재연결 안 함 (로그인 필요)
+        if (event.code === 4001) {
+            console.log('인증 필요 - WebSocket 재연결 중단');
+            wsAuthRejected = true;
+            return;
+        }
+        
+        // 그 외에는 재연결 시도 (네트워크 끊김 등)
         setTimeout(connectWebSocket, 3000);
     };
     
@@ -3006,12 +3023,15 @@ function escapeHtml(text) {
 }
 
 // ============= 이벤트 리스너 =============
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     // 현재 사용자 정보 로드
-    loadCurrentUser();
+    const user = await loadCurrentUser();
     
-    // WebSocket 연결
-    connectWebSocket();
+    // 로그인 상태일 때만 WebSocket 연결
+    if (user) {
+        wsAuthRejected = false;  // 플래그 초기화
+        connectWebSocket();
+    }
     
     // 초기 데이터 로드
     updateModelStatus();
