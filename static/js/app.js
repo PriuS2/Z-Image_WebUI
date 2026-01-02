@@ -1837,11 +1837,16 @@ function closeGalleryDropdown() {
 }
 
 // ============= 갤러리에서 이미지 선택 (편집용) =============
-async function openGallerySelectModal() {
+let gallerySelectTargetSlot = 0;  // 갤러리 선택 시 로드할 타겟 슬롯
+
+async function openGallerySelectModal(targetSlot = 0) {
     const modal = document.getElementById('gallerySelectModal');
     const grid = document.getElementById('gallerySelectGrid');
     
     if (!modal || !grid) return;
+    
+    // 타겟 슬롯 저장
+    gallerySelectTargetSlot = targetSlot;
     
     // 갤러리 데이터 로드
     try {
@@ -1880,8 +1885,8 @@ function selectImageFromGallery(imagePath) {
     // 모달 닫기
     closeModal('gallerySelectModal');
     
-    // 이미지를 편집 탭에 로드
-    loadImageToEditTab(imagePath);
+    // 이미지를 편집 탭의 타겟 슬롯에 로드
+    loadImageToEditTab(imagePath, gallerySelectTargetSlot);
 }
 
 // 이미지를 편집 탭에 로드
@@ -3381,8 +3386,12 @@ function initEditTab() {
             if (e.target.closest('.btn-remove-slot')) {
                 // 제거 버튼 클릭
                 removeEditImageSlot(index);
-            } else if (!e.target.closest('.upload-preview')) {
-                // 슬롯 클릭 시 파일 선택
+            } else if (e.target.closest('.btn-gallery-slot')) {
+                // 갤러리에서 선택 버튼 클릭
+                const slotIndex = parseInt(e.target.closest('.btn-gallery-slot').dataset.slot);
+                openGallerySelectModal(slotIndex);
+            } else if (!e.target.closest('.upload-preview') && !e.target.closest('.btn-gallery-slot')) {
+                // 슬롯 클릭 시 파일 선택 (버튼이 아닌 경우에만)
                 editImageInput.dataset.targetSlot = index;
                 editImageInput.click();
             }
@@ -3501,14 +3510,6 @@ function initEditTab() {
     }
     
     
-    // 갤러리에서 선택 버튼
-    const btnSelectFromGallery = document.getElementById('btnSelectFromGallery');
-    if (btnSelectFromGallery) {
-        btnSelectFromGallery.addEventListener('click', (e) => {
-            e.stopPropagation();
-            openGallerySelectModal();
-        });
-    }
 }
 
 
