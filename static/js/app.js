@@ -3986,6 +3986,9 @@ async function enhanceEditPrompt() {
     
     if (isEditLlmProcessing) return;
     
+    const koreanInputEl = document.getElementById('editKoreanInput');
+    const statusEl = document.getElementById('editTranslateStatus');
+    
     try {
         setEditLlmButtonsDisabled(true);
         addEditMessage('system', '✨ 편집 지시어 향상 중...');
@@ -3994,6 +3997,40 @@ async function enhanceEditPrompt() {
         if (result.success) {
             document.getElementById('editPromptInput').value = result.enhanced;
             addEditMessage('system', '✅ 편집 지시어 향상 완료');
+            
+            // 향상된 영문 텍스트를 한국어로 번역하여 한국어 입력란에 적용
+            if (koreanInputEl) {
+                try {
+                    if (statusEl) {
+                        statusEl.textContent = '한국어 변환 중...';
+                        statusEl.className = 'translate-status translating';
+                    }
+                    
+                    const reverseResult = await apiCallWithTimeout('/translate-reverse', 'POST', { text: result.enhanced });
+                    
+                    if (reverseResult.success) {
+                        koreanInputEl.value = reverseResult.translated;
+                        addEditMessage('system', '🔄 한국어 편집 지시어도 업데이트됨');
+                        
+                        if (statusEl) {
+                            statusEl.textContent = '✓ 동기화됨';
+                            statusEl.className = 'translate-status success';
+                            setTimeout(() => {
+                                if (statusEl.textContent === '✓ 동기화됨') {
+                                    statusEl.textContent = '';
+                                    statusEl.className = 'translate-status';
+                                }
+                            }, 2000);
+                        }
+                    }
+                } catch (reverseError) {
+                    console.error('역번역 실패:', reverseError);
+                    if (statusEl) {
+                        statusEl.textContent = '';
+                        statusEl.className = 'translate-status';
+                    }
+                }
+            }
         }
     } catch (error) {
         addEditMessage('system', `❌ 향상 실패: ${error.message}`, 'error');
