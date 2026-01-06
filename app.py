@@ -1801,13 +1801,17 @@ async def generate_image(
 
 
 @app.post("/api/preview")
-async def generate_preview(request: Request, gen_request: GenerateRequest):
+async def generate_preview(
+    request: Request, 
+    gen_request: GenerateRequest,
+    api_key: Optional[str] = Depends(get_api_key_auth)
+):
     """빠른 미리보기 (256x256)"""
     gen_request.width = 256
     gen_request.height = 256
     gen_request.steps = min(gen_request.steps, 4)
     gen_request.num_images = 1
-    return await generate_image(request, gen_request)
+    return await generate_image(request, gen_request, api_key)
 
 
 @app.post("/api/translate")
