@@ -57,26 +57,6 @@ if errorlevel 1 (
 )
 
 echo.
-
-:: LongCat-Image 패키지 설치 (이미지 편집 기능)
-echo [*] LongCat-Image 패키지 설치 중...
-echo     (이미지 편집 기능에 필요합니다)
-echo.
-if exist "LongCat-Image\setup.py" (
-    pip install -e ./LongCat-Image
-    if errorlevel 1 (
-        echo.
-        echo [!] LongCat-Image 패키지 설치 실패.
-    ) else (
-        echo.
-        echo [✓] LongCat-Image 패키지 설치 완료
-    )
-) else (
-    echo [!] LongCat-Image 폴더를 찾을 수 없습니다.
-    echo     git submodule update --init 을 실행하세요.
-)
-
-echo.
 echo ========================================
 echo    설정 완료!
 echo    Run.bat으로 WebUI를 실행하세요.

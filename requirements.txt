@@ -40,7 +40,6 @@ omegaconf>=2.3.0
 peft>=0.7.0
 
 # 양자화 (8bit/4bit 모델 로딩용 - CUDA 전용)
-# LongCat-Image-Edit 모델의 INT8/INT4 양자화에 필요
 # Windows: pip install bitsandbytes-windows 사용 권장
 bitsandbytes>=0.41.0
 
