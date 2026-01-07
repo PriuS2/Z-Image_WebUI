@@ -19,6 +19,7 @@ from utils.prompt_enhancer import prompt_enhancer, PromptEnhancer
 
 from routers.dependencies import (
     get_session_from_request,
+    require_auth,
     set_session_cookie,
 )
 
@@ -218,8 +219,9 @@ async def get_settings(request: Request):
 
 @router.post("/settings/prompts")
 async def save_session_prompts(request: Request, prompts_request: SystemPromptsRequest):
-    """시스템 프롬프트 저장 (세션별 개인화, 모든 사용자 접근 가능)"""
+    """시스템 프롬프트 저장 (세션별 개인화, 로그인 필요)"""
     session = await get_session_from_request(request)
+    require_auth(session)
     session_settings = session.get_settings()
     
     # 생성 시스템 프롬프트
@@ -265,9 +267,9 @@ async def save_session_prompts(request: Request, prompts_request: SystemPromptsR
 
 @router.delete("/settings/prompts")
 async def reset_session_prompts(request: Request):
-    """시스템 프롬프트 초기화 (세션별 설정 삭제, 전역/기본값 사용)"""
+    """시스템 프롬프트 초기화 (세션별 설정 삭제, 전역/기본값 사용, 로그인 필요)"""
     session = await get_session_from_request(request)
-    
+    require_auth(session)
     session_settings = session.get_settings()
     # 생성 시스템 프롬프트
     if "translate_system_prompt" in session_settings:
